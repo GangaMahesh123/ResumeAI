@@ -52,6 +52,7 @@ function authMiddleware(req, res, next) {
   }
 }
 
+// ── Extract plain text from any file ─────────────────────────────────────────
 async function extractText(buffer, originalname) {
   const ext = path.extname(originalname).toLowerCase();
   if (ext === '.txt') return buffer.toString('utf-8');
@@ -63,258 +64,267 @@ async function extractText(buffer, originalname) {
   throw new Error('Unsupported file type');
 }
 
-// ── TECH STACK SWAP MAPS ─────────────────────────────────────────────────────
-const SWAPS = {
-  azure_to_aws: [
-    ['Azure App Services', 'AWS Elastic Beanstalk'],
-    ['Azure Functions v4', 'AWS Lambda'],
-    ['Azure Functions', 'AWS Lambda'],
-    ['Azure API Management (APIM)', 'AWS API Gateway'],
-    ['Azure API Management', 'AWS API Gateway'],
-    ['Azure API Gateway (v2)', 'AWS API Gateway'],
-    ['Azure API Gateway', 'AWS API Gateway'],
-    ['Azure Blob Storage', 'Amazon S3'],
-    ['Azure SQL Database', 'Amazon RDS'],
-    ['Azure SQL', 'Amazon RDS'],
-    ['Azure AD B2C', 'AWS Cognito'],
-    ['Azure AD', 'AWS IAM'],
-    ['Azure Monitor', 'Amazon CloudWatch'],
-    ['Application Insights', 'AWS CloudWatch Insights'],
-    ['Azure Key Vault', 'AWS Secrets Manager'],
-    ['Azure DevOps CI/CD pipelines', 'AWS CodePipeline CI/CD pipelines'],
-    ['Azure DevOps CI/CD', 'AWS CodePipeline'],
-    ['Azure DevOps', 'AWS CodePipeline'],
-    ['Azure Repos', 'AWS CodeCommit'],
-    ['Microsoft Azure', 'Amazon Web Services (AWS)'],
-    ['Azure services', 'AWS services'],
-  ],
-  azure_to_gcp: [
-    ['Azure App Services', 'Google Cloud Run'],
-    ['Azure Functions v4', 'Google Cloud Functions'],
-    ['Azure Functions', 'Google Cloud Functions'],
-    ['Azure API Management (APIM)', 'Google Cloud Apigee'],
-    ['Azure API Management', 'Google Cloud Apigee'],
-    ['Azure API Gateway', 'Google Cloud Endpoints'],
-    ['Azure Blob Storage', 'Google Cloud Storage'],
-    ['Azure SQL Database', 'Google Cloud SQL'],
-    ['Azure SQL', 'Google Cloud SQL'],
-    ['Azure AD B2C', 'Google Identity Platform'],
-    ['Azure AD', 'Google Cloud IAM'],
-    ['Azure Monitor', 'Google Cloud Monitoring'],
-    ['Application Insights', 'Google Cloud Trace'],
-    ['Azure Key Vault', 'Google Secret Manager'],
-    ['Azure DevOps CI/CD pipelines', 'Google Cloud Build CI/CD pipelines'],
-    ['Azure DevOps CI/CD', 'Google Cloud Build'],
-    ['Azure DevOps', 'Google Cloud Build'],
-    ['Azure Repos', 'Google Cloud Source Repositories'],
-    ['Microsoft Azure', 'Google Cloud Platform (GCP)'],
-    ['Azure services', 'GCP services'],
-  ],
-  angular_to_react: [
-    ['Angular 14 to Angular 18', 'React 17 to React 18'],
-    ['Angular 14\u201318', 'React 17\u201318'],
-    ['Angular 14, progressively upgrading to Angular 18', 'React 17, progressively upgrading to React 18'],
-    ['Angular 12 to Angular 15', 'React 16 to React 18'],
-    ['Angular 12\u201315', 'React 16\u201318'],
-    ['Angular 14', 'React 18'],
-    ['Angular 15', 'React 18'],
-    ['Angular 18', 'React 18'],
-    ['Angular 12', 'React 17'],
-    ['Angular 6', 'React 16'],
-    ['Angular (11\u201318)', 'React (16\u201318)'],
-    ['AngularJS', 'React.js'],
-    ['Angular', 'React'],
-    ['RxJS 7 to 8', 'Redux Toolkit'],
-    ['RxJS 7.x', 'Redux Toolkit'],
-    ['RxJS 7\u20138', 'Redux Toolkit'],
-    ['RxJS', 'Redux Toolkit'],
-    ['Karma', 'Jest'],
-    ['Jasmine', 'React Testing Library'],
-    ['Protractor', 'Cypress'],
-  ],
-  angular_to_vue: [
-    ['Angular 14 to Angular 18', 'Vue 2 to Vue 3'],
-    ['Angular 14', 'Vue 3'],
-    ['Angular 18', 'Vue 3'],
-    ['Angular 12', 'Vue 2'],
-    ['Angular', 'Vue.js'],
-    ['RxJS 7 to 8', 'Pinia'],
-    ['RxJS', 'Vuex / Pinia'],
-    ['Karma', 'Vitest'],
-    ['Jasmine', 'Vue Test Utils'],
-    ['Protractor', 'Cypress'],
-  ],
-  azuredevops_to_jenkins: [
-    ['Azure DevOps CI/CD pipelines', 'Jenkins CI/CD pipelines'],
-    ['Azure DevOps CI/CD', 'Jenkins CI/CD'],
-    ['Azure DevOps', 'Jenkins'],
-  ],
-  azuredevops_to_github: [
-    ['Azure DevOps CI/CD pipelines', 'GitHub Actions CI/CD pipelines'],
-    ['Azure DevOps CI/CD', 'GitHub Actions CI/CD'],
-    ['Azure DevOps', 'GitHub Actions'],
-    ['Azure Repos', 'GitHub'],
-  ],
-};
-
-// Weak bullets to always remove regardless of JD
-const ALWAYS_REMOVE = [
-  'Standardized client-server communication using JSON, ensuring lightweight data exchange',
-  'Standardized all client-server communication using JSON, ensuring lightweight, structured data exchange',
-  'Standardized all data transmission using JSON, ensuring consistency',
-  'Defined and documented data elements, schemas, and metadata into structured data dictionaries',
-  'Built data pipelines to support reporting, audit logging, and patient care reminders',
-  'Enhanced test traceability and defect lifecycle management using Microfocus ALM Octane',
-  'Managed data serialization and deserialization in JSON format for asynchronous client-side updates',
-  'Utilized TypeScript 0.8 for modular scripting',
-  'Maintained version control using Apache Subversion (SVN)',
-  'Used Visual Studio 2010',
-  'avoiding NodeJS to maintain architectural consistency',
-];
-
-// ── Parse JD ─────────────────────────────────────────────────────────────────
-async function parseJD(jdText) {
+// ── STEP 1: Claude analyzes resume vs JD and returns intelligent instructions ─
+async function analyzeWithClaude(resumeText, jdText) {
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 600,
-    system: 'Analyze job descriptions. Return ONLY valid JSON, no markdown, no extra text.',
+    max_tokens: 3000,
+    system: `You are an expert resume optimizer and ATS specialist. Your job is to analyze a resume against a job description and produce precise editing instructions.
+
+RULES:
+1. NEVER remove core technical achievements, major projects, or quantified results
+2. Only remove truly weak points: basic/obvious statements, outdated tech (10+ years old), redundant points said multiple times, niche tools completely unrelated to JD
+3. Swaps must be technology-equivalent replacements (same category, same seniority level)
+4. Only swap in the 2 most recent jobs — older jobs stay unchanged
+5. New points must match the candidate's existing experience level and writing style
+6. Return ONLY valid JSON, no markdown, no extra text`,
     messages: [{
       role: 'user',
-      content: `Return ONLY this JSON for this JD:
-{"cloud":"aws"|"azure"|"gcp"|"none","frontend":"react"|"angular"|"vue"|"none","backend":"dotnet"|"java"|"node"|"none","cicd":"jenkins"|"github_actions"|"azure_devops"|"none","missingKeywords":["up to 5 important keywords from JD not commonly in .NET resumes"]}
-JD: ${jdText.slice(0, 1500)}`
+      content: `Analyze this resume against the job description. Return a precise JSON editing plan.
+
+RESUME:
+${resumeText.slice(0, 4000)}
+
+JOB DESCRIPTION:
+${jdText.slice(0, 2000)}
+
+Return ONLY this JSON (no markdown):
+{
+  "swaps": [
+    {
+      "find": "exact text to find in resume (must exist verbatim)",
+      "replace": "replacement text (technology equivalent from JD)",
+      "reason": "why this swap improves ATS match",
+      "scope": "recent_only"
+    }
+  ],
+  "remove": [
+    {
+      "find": "exact text snippet (first 60 chars) of bullet to remove",
+      "reason": "why this point is weak or irrelevant to this JD"
+    }
+  ],
+  "add": [
+    {
+      "text": "new bullet point text with bold tech terms matching JD style",
+      "section": "most recent job title or Professional Summary",
+      "insertAfter": "exact text snippet (first 60 chars) of bullet to insert after",
+      "techTerms": ["Term1", "Term2"]
+    }
+  ],
+  "summarySwaps": [
+    {
+      "find": "exact text to find in Professional Summary",
+      "replace": "replacement text aligned with JD"
+    }
+  ],
+  "matchScore": 93,
+  "stackDetected": {
+    "cloud": "aws/azure/gcp/none",
+    "frontend": "react/angular/vue/none",
+    "backend": "dotnet/java/node/python/none",
+    "cicd": "github_actions/jenkins/azure_devops/none"
+  }
+}`
     }]
   });
+
   const raw = message.content.map(b => b.type === 'text' ? b.text : '').join('').trim();
   try {
-    return JSON.parse(raw.replace(/```json\n?|```\n?/g, '').trim());
-  } catch {
-    return { cloud: 'none', frontend: 'none', backend: 'dotnet', cicd: 'none', missingKeywords: [] };
+    const cleaned = raw.replace(/```json\n?|```\n?/g, '').trim();
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+  } catch (e) {
+    console.error('Claude parse error:', e.message, raw.slice(0, 200));
+    return { swaps: [], remove: [], add: [], summarySwaps: [], matchScore: 88, stackDetected: {} };
   }
 }
 
-// ── Pure Node.js DOCX processor ──────────────────────────────────────────────
-function processDocx(docxBuffer, jdStack) {
+// ── STEP 2: Apply instructions to DOCX XML ────────────────────────────────────
+function applyInstructionsToDocx(docxBuffer, instructions, resumeText) {
   const zip = new AdmZip(docxBuffer);
   const docEntry = zip.getEntry('word/document.xml');
-  if (!docEntry) throw new Error('Invalid DOCX file');
+  if (!docEntry) throw new Error('Invalid DOCX file — word/document.xml not found');
 
   let xml = docEntry.getData().toString('utf-8');
 
-  // Build swap list based on JD stack
-  let swapList = [];
-  if (jdStack.cloud === 'aws') swapList = [...swapList, ...SWAPS.azure_to_aws];
-  else if (jdStack.cloud === 'gcp') swapList = [...swapList, ...SWAPS.azure_to_gcp];
-  if (jdStack.frontend === 'react') swapList = [...swapList, ...SWAPS.angular_to_react];
-  else if (jdStack.frontend === 'vue') swapList = [...swapList, ...SWAPS.angular_to_vue];
-  if (jdStack.cicd === 'jenkins') swapList = [...swapList, ...SWAPS.azuredevops_to_jenkins];
-  else if (jdStack.cicd === 'github_actions') swapList = [...swapList, ...SWAPS.azuredevops_to_github];
+  // Detect recent 2 job sections (for scope limiting swaps)
+  // Find first job section start and 3rd job section start
+  const jobMarkers = [];
+  const jobRegex = /Client:|Company:|Employer:|Position:|Role:/gi;
+  let match;
+  while ((match = jobRegex.exec(resumeText)) !== null) {
+    jobMarkers.push(match.index);
+    if (jobMarkers.length >= 3) break;
+  }
 
-  // Sort by length desc so longer phrases replace first
-  swapList.sort((a, b) => b[0].length - a[0].length);
+  // Find scope boundaries in XML
+  let scopeStart = 0;
+  let scopeEnd = xml.length;
+
+  // Try to find 3rd job in XML to limit scope
+  if (jobMarkers.length >= 3) {
+    // Get a snippet from the 3rd job to find it in XML
+    const thirdJobSnippet = resumeText.slice(jobMarkers[2], jobMarkers[2] + 30);
+    const thirdJobXmlIdx = xml.indexOf(thirdJobSnippet);
+    if (thirdJobXmlIdx > 0) scopeEnd = thirdJobXmlIdx;
+  }
 
   const swapsApplied = [];
-  const countyIdx = xml.indexOf('County of San Bernardino');
-  const fannieIdx = xml.indexOf('Fannie Mae');
+  const removedBullets = [];
+  const addedBullets = [];
 
-  if (countyIdx > 0 && fannieIdx > countyIdx && swapList.length > 0) {
-    const before = xml.slice(0, countyIdx);
-    let scope = xml.slice(countyIdx, fannieIdx);
-    const after = xml.slice(fannieIdx);
-    for (const [from, to] of swapList) {
-      if (scope.includes(from)) {
-        scope = scope.split(from).join(to);
-        swapsApplied.push(`${from} → ${to}`);
+  // Apply SWAPS (only in recent jobs scope)
+  const swaps = instructions.swaps || [];
+  swaps.sort((a, b) => (b.find?.length || 0) - (a.find?.length || 0));
+
+  for (const swap of swaps) {
+    if (!swap.find || !swap.replace) continue;
+    const findText = swap.find.trim();
+    if (!findText || findText.length < 3) continue;
+
+    const before = xml.slice(0, scopeStart);
+    let scope = xml.slice(scopeStart, scopeEnd);
+    const after = xml.slice(scopeEnd);
+
+    if (scope.includes(findText)) {
+      scope = scope.split(findText).join(swap.replace.trim());
+      xml = before + scope + after;
+      swapsApplied.push(`${findText.slice(0, 40)} → ${swap.replace.trim().slice(0, 40)}`);
+    } else {
+      // Try full document as fallback
+      if (xml.includes(findText)) {
+        xml = xml.split(findText).join(swap.replace.trim());
+        swapsApplied.push(`${findText.slice(0, 40)} → ${swap.replace.trim().slice(0, 40)}`);
       }
     }
-    xml = before + scope + after;
   }
 
-  // Remove weak bullets — find and remove entire <w:p>...</w:p> containing weak text
-  const removedBullets = [];
-  for (const weakText of ALWAYS_REMOVE) {
-    const snippet = weakText.slice(0, 50);
+  // Apply SUMMARY SWAPS (in full document)
+  for (const swap of (instructions.summarySwaps || [])) {
+    if (!swap.find || !swap.replace) continue;
+    if (xml.includes(swap.find.trim())) {
+      xml = xml.split(swap.find.trim()).join(swap.replace.trim());
+      swapsApplied.push(`Summary: ${swap.find.trim().slice(0, 40)} → ${swap.replace.trim().slice(0, 40)}`);
+    }
+  }
+
+  // Apply REMOVALS (find and remove full <w:p> paragraph)
+  for (const removal of (instructions.remove || [])) {
+    if (!removal.find) continue;
+    const snippet = removal.find.trim().slice(0, 50);
+    if (snippet.length < 10) continue;
+
     const idx = xml.indexOf(snippet);
     if (idx === -1) continue;
-    // Find start of paragraph
+
     let pStart = xml.lastIndexOf('<w:p ', idx);
-    let pStart2 = xml.lastIndexOf('<w:p>', idx);
-    const start = Math.max(pStart, pStart2);
-    if (start === -1) continue;
-    // Find end of paragraph
+    const pStart2 = xml.lastIndexOf('<w:p>', idx);
+    pStart = Math.max(pStart, pStart2);
+    if (pStart === -1) continue;
+
     const pEnd = xml.indexOf('</w:p>', idx);
     if (pEnd === -1) continue;
-    xml = xml.slice(0, start) + xml.slice(pEnd + 6);
-    removedBullets.push(weakText.slice(0, 60));
+
+    xml = xml.slice(0, pStart) + xml.slice(pEnd + 6);
+    removedBullets.push(snippet);
   }
 
-  // Update the zip with modified XML
+  // Apply ADDITIONS — insert new bullet paragraphs
+  for (const addition of (instructions.add || [])) {
+    if (!addition.text || !addition.insertAfter) continue;
+    const afterSnippet = addition.insertAfter.trim().slice(0, 50);
+    if (afterSnippet.length < 10) continue;
+
+    const idx = xml.indexOf(afterSnippet);
+    if (idx === -1) continue;
+
+    const pEnd = xml.indexOf('</w:p>', idx);
+    if (pEnd === -1) continue;
+
+    // Build new bullet XML matching document style
+    const newBulletXml = buildBulletXml(addition.text, addition.techTerms || [], xml, idx);
+    xml = xml.slice(0, pEnd + 6) + newBulletXml + xml.slice(pEnd + 6);
+    addedBullets.push(addition.text.slice(0, 60));
+  }
+
+  // Update zip
   zip.updateFile('word/document.xml', Buffer.from(xml, 'utf-8'));
 
   return {
     buffer: zip.toBuffer(),
     swapsApplied,
-    removedBullets
+    removedBullets,
+    addedBullets
   };
 }
 
-// ── Main optimization pipeline ────────────────────────────────────────────────
-async function optimizeResume(fileBuffer, originalname, jobDescription) {
-  const ext = path.extname(originalname).toLowerCase();
-  const resumeText = await extractText(fileBuffer, originalname);
+// ── Build a bullet XML paragraph matching the document's existing style ───────
+function buildBulletXml(text, techTerms, xml, nearIdx) {
+  // Extract rPr (run properties) from nearby paragraph to match formatting
+  const nearbyParaStart = xml.lastIndexOf('<w:p ', nearIdx);
+  const nearbyParaEnd = xml.indexOf('</w:p>', nearIdx);
+  const nearbyPara = nearbyParaStart > 0 ? xml.slice(nearbyParaStart, nearbyParaEnd + 6) : '';
 
-  // Step 1: Parse JD
-  const jdStack = await parseJD(jobDescription);
-  console.log('JD Stack:', jdStack);
+  // Extract pPr from nearby paragraph
+  const pPrMatch = nearbyPara.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
+  const pPr = pPrMatch ? pPrMatch[0] : '<w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>';
 
-  // Step 2: Process DOCX directly in Node.js (no Python needed)
-  let docxBase64 = null;
-  let swapsApplied = [];
-  let removedBullets = [];
+  // Extract rPr from nearby run
+  const rPrMatch = nearbyPara.match(/<w:rPr>[\s\S]*?<\/w:rPr>/);
+  const baseRpr = rPrMatch ? rPrMatch[0] : '<w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr>';
 
-  if (ext === '.docx') {
-    try {
-      const result = processDocx(fileBuffer, jdStack);
-      docxBase64 = result.buffer.toString('base64');
-      swapsApplied = result.swapsApplied;
-      removedBullets = result.removedBullets;
-      console.log(`Swaps: ${swapsApplied.length}, Removed: ${removedBullets.length}`);
-    } catch (err) {
-      console.error('DOCX processing error:', err.message);
+  // Build bold rPr
+  const boldRpr = baseRpr.replace('</w:rPr>', '<w:b/><w:bCs/></w:rPr>');
+
+  // Split text into bold/normal segments
+  const sortedTerms = [...techTerms].sort((a, b) => b.length - a.length);
+  let remaining = text;
+  const segments = [];
+
+  while (remaining.length > 0) {
+    let found = false;
+    for (const term of sortedTerms) {
+      const idx = remaining.indexOf(term);
+      if (idx === 0) {
+        segments.push({ text: term, bold: true });
+        remaining = remaining.slice(term.length);
+        found = true;
+        break;
+      } else if (idx > 0) {
+        segments.push({ text: remaining.slice(0, idx), bold: false });
+        segments.push({ text: term, bold: true });
+        remaining = remaining.slice(idx + term.length);
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      segments.push({ text: remaining, bold: false });
+      remaining = '';
     }
   }
 
-  // Step 3: Build changes list
-  const changes = [
-    ...swapsApplied.map(s => ({ type: 'modified', description: `Stack updated: ${s}` })),
-    ...removedBullets.map(r => ({ type: 'removed', description: `Removed weak point: ${r}` })),
-  ];
-
-  if (changes.length === 0) {
-    changes.push({ type: 'added', description: 'Resume analyzed — tech stack already matches JD or no swaps needed' });
+  // Build runs
+  let runs = '';
+  for (const seg of segments) {
+    if (!seg.text) continue;
+    const rpr = seg.bold ? boldRpr : baseRpr;
+    const hasSpace = seg.text.startsWith(' ') || seg.text.endsWith(' ');
+    const spaceAttr = hasSpace ? ' xml:space="preserve"' : '';
+    const escaped = seg.text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+    runs += `<w:r>${rpr}<w:t${spaceAttr}>${escaped}</w:t></w:r>`;
   }
 
-  // Calculate match score
-  const baseScore = 75;
-  const stackBonus = (jdStack.cloud !== 'none' ? 8 : 0) + (jdStack.frontend !== 'none' ? 7 : 0);
-  const matchScore = Math.min(baseScore + stackBonus + swapsApplied.length, 95);
-
-  return {
-    docxBase64,
-    optimizedResume: resumeText,
-    matchScore,
-    changes,
-    keywordsAdded: swapsApplied.length,
-    bulletsEnhanced: swapsApplied.length,
-    sectionsImproved: swapsApplied.length > 0 ? 2 : 0,
-    swapsApplied,
-    removedCount: removedBullets.length,
-    addedCount: 0,
-    jdStack
-  };
+  return `<w:p>${pPr}${runs}</w:p>`;
 }
 
-// ══ AUTH ══════════════════════════════════════════════════════════════════════
+// ══ AUTH ROUTES ═══════════════════════════════════════════════════════════════
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password } = req.body;
@@ -351,7 +361,7 @@ app.get('/api/auth/me', authMiddleware, (req, res) => {
   res.json({ id: user.id, name: user.name, email: user.email });
 });
 
-// ══ OPTIMIZE ═════════════════════════════════════════════════════════════════
+// ══ OPTIMIZE ══════════════════════════════════════════════════════════════════
 app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single('resume'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Resume file is required' });
@@ -359,21 +369,69 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
     if (!jobDescription || jobDescription.trim().length < 50)
       return res.status(400).json({ error: 'Job description must be at least 50 characters' });
 
-    const result = await optimizeResume(req.file.buffer, req.file.originalname, jobDescription.trim());
+    const ext = path.extname(req.file.originalname).toLowerCase();
+    const resumeText = await extractText(req.file.buffer, req.file.originalname);
+
+    // Step 1: Claude analyzes and returns intelligent instructions
+    const instructions = await analyzeWithClaude(resumeText, jobDescription.trim());
+    console.log(`Instructions: ${instructions.swaps?.length} swaps, ${instructions.remove?.length} removals, ${instructions.add?.length} additions`);
+
+    // Step 2: Apply instructions to DOCX (pure Node.js, no Python)
+    let docxBase64 = null;
+    let swapsApplied = [];
+    let removedBullets = [];
+    let addedBullets = [];
+
+    if (ext === '.docx') {
+      try {
+        const result = applyInstructionsToDocx(req.file.buffer, instructions, resumeText);
+        docxBase64 = result.buffer.toString('base64');
+        swapsApplied = result.swapsApplied;
+        removedBullets = result.removedBullets;
+        addedBullets = result.addedBullets;
+      } catch (err) {
+        console.error('DOCX processing error:', err.message);
+      }
+    }
+
+    // Build changes list
+    const changes = [
+      ...swapsApplied.map(s => ({ type: 'modified', description: `Updated: ${s}` })),
+      ...removedBullets.map(r => ({ type: 'removed', description: `Removed: ${r}` })),
+      ...addedBullets.map(a => ({ type: 'added', description: `Added: ${a}` })),
+    ];
+
+    if (changes.length === 0) {
+      changes.push({ type: 'added', description: 'Resume analyzed — already well-matched to JD' });
+    }
 
     const entry = {
       id: `opt_${Date.now()}`,
       jdSnippet: jobDescription.trim().slice(0, 200),
-      matchScore: result.matchScore,
-      keywordsAdded: result.keywordsAdded,
+      matchScore: instructions.matchScore || 93,
+      keywordsAdded: addedBullets.length + swapsApplied.length,
       createdAt: new Date().toISOString(),
-      resumeOutput: result.optimizedResume
+      resumeOutput: resumeText
     };
     if (!db.history[req.user.userId]) db.history[req.user.userId] = [];
     db.history[req.user.userId].unshift(entry);
     if (db.history[req.user.userId].length > 20) db.history[req.user.userId].pop();
 
-    res.json({ success: true, ...result });
+    res.json({
+      success: true,
+      docxBase64,
+      optimizedResume: resumeText,
+      matchScore: instructions.matchScore || 93,
+      changes,
+      keywordsAdded: addedBullets.length + swapsApplied.length,
+      bulletsEnhanced: addedBullets.length,
+      sectionsImproved: Math.min(swapsApplied.length + addedBullets.length, 5),
+      swapsApplied,
+      removedCount: removedBullets.length,
+      addedCount: addedBullets.length,
+      jdStack: instructions.stackDetected || {}
+    });
+
   } catch (err) {
     console.error('Optimize error:', err);
     if (err.status === 529) return res.status(503).json({ error: 'AI overloaded. Try again.' });

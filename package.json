@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",
+    "adm-zip": "^0.5.17",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "docx": "^9.6.1",
