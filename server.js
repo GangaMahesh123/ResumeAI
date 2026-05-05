@@ -31,7 +31,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-i
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // ── Middleware ──────────────────────────────────────────────────────────────
-app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:3000', credentials: true }));
+app.use(cors({ origin: '*', credentials: false }));;
 app.use(express.json());
 
 // Rate limiting — 20 optimize calls per hour per IP
