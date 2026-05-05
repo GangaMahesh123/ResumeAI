@@ -419,6 +419,24 @@ async function optimizeResume(resumeBuffer, originalFilename, jobDescription) {
     return await optimizePlainText(resumeText, jobDescription, jdStack, analysis);
   }
 
+  // Check if Python is available
+  let pythonAvailable = false;
+  try {
+    execSync('python3 --version', { timeout: 5000 });
+    pythonAvailable = true;
+  } catch {
+    try {
+      execSync('python --version', { timeout: 5000 });
+      pythonAvailable = true;
+    } catch { pythonAvailable = false; }
+  }
+
+  // Fall back to text-based if Python not available
+  if (!pythonAvailable) {
+    console.log('Python not available, using text-based optimization');
+    return await optimizePlainText(resumeText, jobDescription, jdStack, analysis);
+  }
+
   // STEP 3-6: XML-based optimization for DOCX files
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'resumeai-'));
   const inputPath = path.join(tmpDir, 'input.docx');
@@ -430,7 +448,8 @@ async function optimizeResume(resumeBuffer, originalFilename, jobDescription) {
 
     // Unpack DOCX
     const unpackScript = path.join(__dirname, 'scripts', 'unpack.py');
-    execSync(`python3 ${unpackScript} "${inputPath}" "${unpackDir}"`, { timeout: 30000 });
+    const pyCmd = (() => { try { execSync('python3 --version'); return 'python3'; } catch { return 'python'; } })();
+    execSync(`${pyCmd} ${unpackScript} "${inputPath}" "${unpackDir}"`, { timeout: 30000 });
 
     const docXmlPath = path.join(unpackDir, 'word', 'document.xml');
     let xmlContent = fs.readFileSync(docXmlPath, 'utf-8');
@@ -467,7 +486,7 @@ async function optimizeResume(resumeBuffer, originalFilename, jobDescription) {
 
     // Pack back to DOCX
     const packScript = path.join(__dirname, 'scripts', 'pack.py');
-    execSync(`python3 ${packScript} "${unpackDir}" "${outputPath}" --original "${inputPath}" --validate false`, { timeout: 30000 });
+    execSync(`${pyCmd} ${packScript} "${unpackDir}" "${outputPath}" --original "${inputPath}" --validate false`, { timeout: 30000 });
 
     const docxBuffer = fs.readFileSync(outputPath);
 
