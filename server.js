@@ -102,7 +102,16 @@ Return this exact JSON:
 
   const raw = message.content.map(b => b.type === 'text' ? b.text : '').join('');
   try {
-    return JSON.parse(raw.replace(/```json\n?|```\n?/g, '').trim());
+    const cleaned = raw
+      .replace(/```json\n?/gi, '')
+      .replace(/```\n?/g, '')
+      .replace(/^\s*\*\*`+json`+\*\*\s*/gi, '')
+      .replace(/^\s*`+\s*/gm, '')
+      .trim();
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    const jsonOnly = cleaned.slice(firstBrace, lastBrace + 1);
+    return JSON.parse(jsonOnly);
   } catch {
     return {
       fullOptimizedText: raw,
