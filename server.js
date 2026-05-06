@@ -247,8 +247,16 @@ function detectSwaps(resumeText, jdText) {
   const resume = resumeText.toLowerCase();
   const swaps = [];
 
-  // Helper: does JD explicitly mention this term?
-  const jdHas = (...terms) => terms.some(t => jd.includes(t.toLowerCase()));
+  // Helper: does JD explicitly mention this term? (word boundary aware)
+  const jdHas = (...terms) => terms.some(t => {
+    const tl = t.toLowerCase();
+    const idx = jd.indexOf(tl);
+    if (idx === -1) return false;
+    // Check word boundaries - char before and after must not be alphanumeric
+    const before = idx === 0 ? ' ' : jd[idx - 1];
+    const after = idx + tl.length >= jd.length ? ' ' : jd[idx + tl.length];
+    return !/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after);
+  });
   // Helper: does resume have this term?
   const resumeHas = (...terms) => terms.some(t => resume.includes(t.toLowerCase()));
 
