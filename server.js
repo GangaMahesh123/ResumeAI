@@ -173,7 +173,11 @@ STRICT RULES:
    NEVER touch older client projects — they must remain exactly as in the original resume
 10. Missing JD points inserted naturally into existing bullets or added as new bullets in right position
 11. Maintain same writing style, bullet format, and resume tone
-12. Final resume match must be 92-95% — not overstuffed beyond that
+12. Final resume match must be 92-96% — not overstuffed beyond that
+13. CRITICAL — DO NOT SWAP IF NOT NEEDED: If the JD does not mention a different cloud (e.g. JD says nothing about AWS), do NOT swap Azure to AWS. If JD mentions Angular, do NOT swap Angular to React. Only swap when there is a CLEAR mismatch between what the resume has and what the JD explicitly requires.
+14. NEVER reduce years of experience — if resume says 12+ years, keep 12+ years
+15. NEVER swap a technology when the JD already accepts or requires that technology (e.g. JD wants Angular → keep Angular, do not swap to React)
+16. If JD has no cloud requirement — keep existing cloud stack as is, do not add AWS or GCP
 
 PROCESS:
 STEP 1 — ANALYZE JD:
@@ -334,14 +338,16 @@ Return ONLY this JSON (no markdown):
   }
 }
 
-// ── Build guaranteed swap list based on detected stack mismatch ──────────────
-function buildGuaranteedSwaps(stackDetected, resumeText) {
+// ── Build guaranteed swap list — only if JD actually requires the technology ──
+function buildGuaranteedSwaps(stackDetected, resumeText, jdText) {
   const swaps = [];
-  const has = (term) => resumeText.includes(term);
+  const resumeHas = (term) => resumeText.toLowerCase().includes(term.toLowerCase());
+  const jdWants = (term) => jdText.toLowerCase().includes(term.toLowerCase());
+  const jdWantsAny = (...terms) => terms.some(t => jdText.toLowerCase().includes(t.toLowerCase()));
 
-  // Cloud swaps
-  if (stackDetected.cloud === 'aws' || (has('Azure') && !has('Amazon Web Services'))) {
-    if (stackDetected.cloud === 'aws') {
+  // CLOUD SWAPS — only if JD explicitly mentions the target cloud
+  // If JD says "AWS" or "Amazon" → swap Azure to AWS
+  if (stackDetected.cloud === 'aws' && jdWantsAny('AWS', 'Amazon Web Services', 'Amazon S3', 'EC2', 'Lambda', 'RDS') && resumeHas('Azure')) {
       // Longest phrases first
       [
         ['Azure API Management (APIM)', 'AWS API Gateway'],
@@ -366,10 +372,10 @@ function buildGuaranteedSwaps(stackDetected, resumeText) {
         ['Microsoft Azure', 'Amazon Web Services (AWS)'],
         ['Azure services', 'AWS services'],
       ].forEach(([f, t]) => swaps.push([f, t]));
-    }
   }
 
-  if (stackDetected.cloud === 'gcp') {
+  // GCP swaps — only if JD explicitly mentions GCP
+  if (stackDetected.cloud === 'gcp' && jdWantsAny('GCP', 'Google Cloud', 'Vertex AI', 'BigQuery', 'Cloud Run') && resumeHas('Azure')) {
     [
       ['Azure API Management (APIM)', 'Google Cloud Apigee'],
       ['Azure API Management', 'Google Cloud Apigee'],
@@ -392,8 +398,12 @@ function buildGuaranteedSwaps(stackDetected, resumeText) {
     ].forEach(([f, t]) => swaps.push([f, t]));
   }
 
-  // Frontend swaps
-  if (stackDetected.frontend === 'react' && has('Angular')) {
+  // FRONTEND SWAPS — only if JD explicitly requires React (not Angular)
+  // If JD mentions Angular, do NOT swap Angular to React
+  if (stackDetected.frontend === 'react'
+      && jdWantsAny('React', 'React.js', 'ReactJS')
+      && !jdWantsAny('Angular')
+      && resumeHas('Angular')) {
     [
       ['Angular 14 to Angular 18', 'React 17 to React 18'],
       ['Angular 14–18', 'React 17–18'],
@@ -418,7 +428,7 @@ function buildGuaranteedSwaps(stackDetected, resumeText) {
     ].forEach(([f, t]) => swaps.push([f, t]));
   }
 
-  if (stackDetected.frontend === 'vue' && has('Angular')) {
+  if (stackDetected.frontend === 'vue' && jdWantsAny('Vue', 'Vue.js', 'VueJS') && !jdWantsAny('Angular') && resumeHas('Angular')) {
     [
       ['Angular 14 to Angular 18', 'Vue 2 to Vue 3'],
       ['Angular 14', 'Vue 3'], ['Angular 18', 'Vue 3'],
@@ -427,7 +437,7 @@ function buildGuaranteedSwaps(stackDetected, resumeText) {
     ].forEach(([f, t]) => swaps.push([f, t]));
   }
 
-  if (stackDetected.frontend === 'angular' && has('React')) {
+  if (stackDetected.frontend === 'angular' && jdWantsAny('Angular') && !jdWantsAny('React') && resumeHas('React')) {
     [
       ['React 17 to React 18', 'Angular 14 to Angular 18'],
       ['React 18', 'Angular 18'], ['React 17', 'Angular 14'],
@@ -441,7 +451,7 @@ function buildGuaranteedSwaps(stackDetected, resumeText) {
 }
 
 // ── Apply all instructions to DOCX ───────────────────────────────────────────
-function applyToDocx(docxBuffer, instructions, resumeText) {
+function applyToDocx(docxBuffer, instructions, resumeText, jdText) {
   const zip = new AdmZip(docxBuffer);
   const docEntry = zip.getEntry('word/document.xml');
   if (!docEntry) throw new Error('Invalid DOCX');
@@ -506,7 +516,7 @@ function applyToDocx(docxBuffer, instructions, resumeText) {
 
   // GUARANTEED TECH STACK SWAPS — only in recent 2 projects, summary, and skills
   // Never touch older clients
-  const guaranteedSwaps = buildGuaranteedSwaps(instructions.stackDetected || {}, resumeText);
+  const guaranteedSwaps = buildGuaranteedSwaps(instructions.stackDetected || {}, resumeText, jdText);
   if (guaranteedSwaps.length > 0) {
     // Find boundaries: recent 2 projects start and 3rd (older) project start
     const recentProjectsStart = (() => {
@@ -704,7 +714,7 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
 
     if (ext === '.docx') {
       try {
-        const result = applyToDocx(req.file.buffer, instructions, resumeText);
+        const result = applyToDocx(req.file.buffer, instructions, resumeText, jobDescription.trim());
         docxBase64 = result.buffer.toString('base64');
         swapsApplied = result.swapsApplied;
         removedBullets = result.removedBullets;
