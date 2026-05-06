@@ -248,8 +248,15 @@ ABSOLUTE RULES:
       role: 'user',
       content: `Score this resume against the JD, then produce a complete editing plan to reach 92-95% ATS match.
 
+CRITICAL INSTRUCTION FOR ADDITIONS:
+- Add new bullets ONLY in the Professional Experience sections (the 2 most recent jobs)
+- DO NOT add to Professional Summary
+- The insertAfter field must reference a bullet from the experience section, NOT from the summary
+- Experience bullets start with action verbs like "Implemented", "Designed", "Developed", "Integrated", "Built", "Managed"
+- DO NOT use markdown bold (**text**) in bullet text — just write plain text, list tech terms separately in techTerms array
+
 RESUME:
-${resumeText.slice(0, 4500)}
+${resumeText.slice(0, 6000)}
 
 JOB DESCRIPTION:
 ${jdText.slice(0, 2000)}
@@ -280,8 +287,8 @@ Return ONLY this JSON (no markdown):
   ],
   "add": [
     {
-      "text": "complete new bullet matching candidate writing style",
-      "insertAfter": "first 60 chars of existing bullet — copied exactly from resume",
+      "text": "complete new bullet plain text no markdown bold — matching candidate writing style",
+      "insertAfter": "first 60 chars of an EXPERIENCE SECTION bullet — copied exactly from resume (NOT from summary)",
       "techTerms": ["ExactTerm1", "ExactTerm2"],
       "reason": "which JD keyword this covers"
     }
@@ -305,6 +312,71 @@ Return ONLY this JSON (no markdown):
   }
 }
 
+// ── Hardcoded tech stack swap maps ───────────────────────────────────────────
+const AZURE_TO_AWS = [
+  ['Azure App Services', 'AWS Elastic Beanstalk'],
+  ['Azure Functions v4', 'AWS Lambda'],
+  ['Azure Functions', 'AWS Lambda'],
+  ['Azure API Management (APIM)', 'AWS API Gateway'],
+  ['Azure API Management', 'AWS API Gateway'],
+  ['Azure API Gateway (v2)', 'AWS API Gateway'],
+  ['Azure API Gateway', 'AWS API Gateway'],
+  ['Azure Blob Storage', 'Amazon S3'],
+  ['Azure SQL Database', 'Amazon RDS'],
+  ['Azure SQL', 'Amazon RDS'],
+  ['Azure AD B2C', 'AWS Cognito'],
+  ['Azure AD', 'AWS IAM'],
+  ['Azure Monitor', 'Amazon CloudWatch'],
+  ['Application Insights', 'AWS CloudWatch Insights'],
+  ['Azure Key Vault', 'AWS Secrets Manager'],
+  ['Azure DevOps CI/CD pipelines', 'AWS CodePipeline CI/CD pipelines'],
+  ['Azure DevOps CI/CD', 'AWS CodePipeline'],
+  ['Azure DevOps', 'AWS CodePipeline'],
+  ['Azure Repos', 'AWS CodeCommit'],
+  ['Microsoft Azure', 'Amazon Web Services (AWS)'],
+  ['Azure services', 'AWS services'],
+];
+
+const AZURE_TO_GCP = [
+  ['Azure App Services', 'Google Cloud Run'],
+  ['Azure Functions v4', 'Google Cloud Functions'],
+  ['Azure Functions', 'Google Cloud Functions'],
+  ['Azure API Management (APIM)', 'Google Cloud Apigee'],
+  ['Azure API Management', 'Google Cloud Apigee'],
+  ['Azure API Gateway', 'Google Cloud Endpoints'],
+  ['Azure Blob Storage', 'Google Cloud Storage'],
+  ['Azure SQL Database', 'Google Cloud SQL'],
+  ['Azure SQL', 'Google Cloud SQL'],
+  ['Azure AD B2C', 'Google Identity Platform'],
+  ['Azure AD', 'Google Cloud IAM'],
+  ['Azure Monitor', 'Google Cloud Monitoring'],
+  ['Application Insights', 'Google Cloud Trace'],
+  ['Azure Key Vault', 'Google Secret Manager'],
+  ['Azure DevOps CI/CD pipelines', 'Google Cloud Build CI/CD pipelines'],
+  ['Azure DevOps CI/CD', 'Google Cloud Build'],
+  ['Azure DevOps', 'Google Cloud Build'],
+  ['Azure Repos', 'Google Cloud Source Repositories'],
+  ['Microsoft Azure', 'Google Cloud Platform (GCP)'],
+  ['Azure services', 'GCP services'],
+];
+
+const ANGULAR_TO_REACT = [
+  ['Angular 14 to Angular 18', 'React 17 to React 18'],
+  ['Angular 14–18', 'React 17–18'],
+  ['Angular 14, progressively upgrading to Angular 18', 'React 17, progressively upgrading to React 18'],
+  ['Angular 12 to Angular 15', 'React 16 to React 18'],
+  ['Angular 14', 'React 18'], ['Angular 15', 'React 18'], ['Angular 18', 'React 18'],
+  ['Angular 12', 'React 17'], ['Angular 6', 'React 16'], ['Angular', 'React'],
+  ['RxJS 7 to 8', 'Redux Toolkit'], ['RxJS 7–8', 'Redux Toolkit'], ['RxJS', 'Redux Toolkit'],
+  ['Karma', 'Jest'], ['Jasmine', 'React Testing Library'], ['Protractor', 'Cypress'],
+];
+
+const ANGULAR_TO_VUE = [
+  ['Angular 14 to Angular 18', 'Vue 2 to Vue 3'], ['Angular 14', 'Vue 3'],
+  ['Angular 18', 'Vue 3'], ['Angular 12', 'Vue 2'], ['Angular', 'Vue.js'],
+  ['RxJS', 'Vuex / Pinia'], ['Karma', 'Vitest'], ['Jasmine', 'Vue Test Utils'], ['Protractor', 'Cypress'],
+];
+
 // ── Apply all instructions to DOCX ───────────────────────────────────────────
 function applyToDocx(docxBuffer, instructions, resumeText) {
   const zip = new AdmZip(docxBuffer);
@@ -315,11 +387,54 @@ function applyToDocx(docxBuffer, instructions, resumeText) {
   const paras = extractParagraphs(xml);
 
   // Detect scope (recent 2 jobs only for swaps)
-  // Find 3rd job marker to limit scope
   let scopeEndText = null;
   const jobKeywords = ['Fannie Mae', 'Lulu Lemon', 'LuluLemon', 'Infosys', 'previous employer'];
   for (const kw of jobKeywords) {
     if (resumeText.includes(kw)) { scopeEndText = kw; break; }
+  }
+
+  // HARDCODED STACK SWAPS based on JD detection
+  // These always apply correctly regardless of what Claude returns
+  const stack = instructions.stackDetected || {};
+  let hardcodedSwaps = [];
+  if (stack.cloud === 'aws') hardcodedSwaps = [...hardcodedSwaps, ...AZURE_TO_AWS];
+  if (stack.cloud === 'gcp') hardcodedSwaps = [...hardcodedSwaps, ...AZURE_TO_GCP];
+  if (stack.frontend === 'react') hardcodedSwaps = [...hardcodedSwaps, ...ANGULAR_TO_REACT];
+  if (stack.frontend === 'vue') hardcodedSwaps = [...hardcodedSwaps, ...ANGULAR_TO_VUE];
+
+  // Sort by length desc — longer phrases first
+  hardcodedSwaps.sort((a, b) => b[0].length - a[0].length);
+
+  const hardcodedApplied = [];
+  if (hardcodedSwaps.length > 0) {
+    const scopeEnd = scopeEndText ? xml.indexOf(scopeEndText) : -1;
+    const before = scopeEnd > 0 ? xml.slice(0, xml.indexOf(xml.match(/Client:|Company:/)?.[0] || 'Professional Experience') || 0) : '';
+
+    if (scopeEnd > 0) {
+      // Find start of experience section
+      const expStart = Math.max(xml.indexOf('Professional Experience'), xml.indexOf('County of San Bernardino'), xml.indexOf('Client:'));
+      if (expStart > 0) {
+        const beforeExp = xml.slice(0, expStart);
+        let scope = xml.slice(expStart, scopeEnd);
+        const after = xml.slice(scopeEnd);
+        for (const [from, to] of hardcodedSwaps) {
+          if (scope.includes(from)) {
+            scope = scope.split(from).join(to);
+            hardcodedApplied.push(\`\${from.slice(0,30)} → \${to.slice(0,30)}\`);
+          }
+        }
+        xml = beforeExp + scope + after;
+      }
+    } else {
+      // Apply to full document
+      for (const [from, to] of hardcodedSwaps) {
+        if (xml.includes(from)) {
+          xml = xml.split(from).join(to);
+          hardcodedApplied.push(\`\${from.slice(0,30)} → \${to.slice(0,30)}\`);
+        }
+      }
+    }
+    if (hardcodedApplied.length > 0) console.log(\`Hardcoded swaps: \${hardcodedApplied.length}\`);
   }
 
   const swapsApplied = [];
@@ -382,7 +497,9 @@ function applyToDocx(docxBuffer, instructions, resumeText) {
       continue;
     }
 
-    const newBulletXml = buildBulletPara(addition.text, addition.techTerms || [], templatePara.xml);
+    // Strip any markdown bold formatting Claude may have included
+    const cleanText = addition.text.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1');
+    const newBulletXml = buildBulletPara(cleanText, addition.techTerms || [], templatePara.xml);
     const newXml = insertAfterParagraph(xml, afterSnippet, newBulletXml);
     if (newXml !== xml) {
       xml = newXml;
@@ -397,7 +514,12 @@ function applyToDocx(docxBuffer, instructions, resumeText) {
 
   zip.updateFile('word/document.xml', Buffer.from(xml, 'utf-8'));
 
-  return { buffer: zip.toBuffer(), swapsApplied, removedBullets, addedBullets };
+  return {
+    buffer: zip.toBuffer(),
+    swapsApplied: [...hardcodedApplied, ...swapsApplied],
+    removedBullets,
+    addedBullets
+  };
 }
 
 // ══ AUTH ══════════════════════════════════════════════════════════════════════
