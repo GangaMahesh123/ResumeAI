@@ -195,31 +195,29 @@ Identify:
 STEP 3 — GENERATE CHANGES:
 Generate ONLY the exact additions, replacements, and removals needed for 92-95% match.
 
-STEP 4 — SWAP ALL TECH MISMATCHES (CRITICAL):
-When resume has Technology A but JD requires Technology B (same category):
-Generate INDIVIDUAL swap pairs for EVERY specific term in the resume — NOT one generic swap.
-Example: resume has Azure, JD wants AWS → generate separate swaps for:
-"Azure API Management (APIM)" → "AWS API Gateway"
-"Azure API Gateway (v2)" → "AWS API Gateway"
-"Azure AD B2C" → "AWS Cognito"
-"Azure AD" → "AWS IAM"
-"Azure DevOps CI/CD pipelines" → "AWS CodePipeline CI/CD pipelines"
-"Azure DevOps" → "AWS CodePipeline"
-"Azure App Services" → "AWS Elastic Beanstalk"
-"Azure Functions v4" → "AWS Lambda"
-"Azure Functions" → "AWS Lambda"
-"Azure Blob Storage" → "Amazon S3"
-"Azure SQL Database" → "Amazon RDS"
-"Azure SQL" → "Amazon RDS"
-"Azure Repos" → "AWS CodeCommit"
-"Azure Key Vault" → "AWS Secrets Manager"
-"Azure Monitor" → "Amazon CloudWatch"
-"Application Insights" → "AWS CloudWatch Insights"
-"Microsoft Azure" → "Amazon Web Services (AWS)"
-Sort swaps LONGEST to SHORTEST so longer phrases replace before shorter ones.
-Apply same individual swap logic for Angular→React, React→Angular, GCP→AWS, etc.
-Swaps in experience/environment: scope = "recent_only" (recent 2 projects only)
-Swaps in summary/skills: scope = "full_document"
+STEP 4 — TECHNOLOGY SWAPS (VERY STRICT RULES):
+BEFORE generating ANY swap, ask yourself: "Does the JD EXPLICITLY name this target technology?"
+If NO → DO NOT generate that swap. Leave the resume technology as is.
+
+SWAP ONLY WHEN:
+- JD explicitly names "AWS" or "Amazon" → then swap Azure to AWS
+- JD explicitly names "React" or "React.js" (and NOT Angular) → then swap Angular to React  
+- JD explicitly names "GCP" or "Google Cloud" → then swap Azure to GCP
+- JD explicitly names "Angular" (and resume has React) → then swap React to Angular
+- JD explicitly names a different database (e.g. PostgreSQL only, not SQL Server) → then swap
+- JD explicitly names a different CI/CD tool that conflicts with resume → then swap
+
+DO NOT SWAP WHEN:
+- JD mentions .NET, C#, ASP.NET Core → these already match, no swap needed
+- JD does not mention cloud at all → keep Azure as is
+- JD does not mention frontend framework → keep Angular as is
+- JD mentions Blazor → Blazor is already in resume, no swap needed
+- JD mentions RabbitMQ → RabbitMQ is already in resume (Kafka stays too, both are valid)
+- JD mentions MongoDB → add it if missing, but do NOT remove SQL Server
+- The technology is already present in the resume AND acceptable for the JD
+
+Generate swaps ONLY for genuine mismatches where JD explicitly requires a DIFFERENT technology.
+Scope: experience/environment = "recent_only", summary/skills = "full_document"
 
 STEP 5 — VERSION VALIDATION:
 For every technology version added or swapped:
@@ -470,13 +468,47 @@ function applyToDocx(docxBuffer, instructions, resumeText, jdText) {
   const removedBullets = [];
   const addedBullets = [];
 
-  // SWAPS — sorted by length desc so longer phrases replace first
+  // SWAPS — validate each swap against JD before applying
+  // REJECT any swap that introduces a technology not mentioned in the JD
+  const jdLower = (jdText || '').toLowerCase();
+
+  // Technologies that should NEVER be swapped unless JD explicitly asks
+  const cloudSwapGuards = [
+    { from: 'azure', to: 'aws', jdRequired: ['aws', 'amazon web services', 'ec2', 'lambda', 's3', 'rds'] },
+    { from: 'azure', to: 'gcp', jdRequired: ['gcp', 'google cloud', 'vertex ai', 'bigquery'] },
+    { from: 'aws', to: 'azure', jdRequired: ['azure', 'microsoft azure'] },
+    { from: 'aws', to: 'gcp', jdRequired: ['gcp', 'google cloud'] },
+    { from: 'angular', to: 'react', jdRequired: ['react', 'react.js', 'reactjs'] },
+    { from: 'react', to: 'angular', jdRequired: ['angular'] },
+    { from: 'angular', to: 'vue', jdRequired: ['vue', 'vue.js', 'vuejs'] },
+  ];
+
+  function isSwapAllowed(findText, replaceText) {
+    const findLower = (findText || '').toLowerCase();
+    const replaceLower = (replaceText || '').toLowerCase();
+    for (const guard of cloudSwapGuards) {
+      // Check if this swap matches a guarded pattern
+      const isGuardedSwap = findLower.includes(guard.from) && replaceLower.includes(guard.to.split(' ')[0]);
+      if (isGuardedSwap) {
+        // Only allow if JD explicitly mentions the target technology
+        const jdAllows = guard.jdRequired.some(req => jdLower.includes(req));
+        if (!jdAllows) {
+          console.log(`BLOCKED swap: "${findText.slice(0,40)}" → "${replaceText.slice(0,40)}" (JD doesn't require ${guard.to})`);
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
   const swaps = [...(instructions.swaps || [])];
   swaps.sort((a, b) => (b.find?.length || 0) - (a.find?.length || 0));
 
   for (const swap of swaps) {
     if (!swap.find || !swap.replace) continue;
     if (swap.find.trim() === swap.replace.trim()) continue;
+    // Validate swap against JD before applying
+    if (!isSwapAllowed(swap.find, swap.replace)) continue;
 
     const isRecentOnly = swap.scope === 'recent_only';
 
