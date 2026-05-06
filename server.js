@@ -347,7 +347,7 @@ function buildGuaranteedSwaps(stackDetected, resumeText, jdText) {
 
   // CLOUD SWAPS — only if JD explicitly mentions the target cloud
   // If JD says "AWS" or "Amazon" → swap Azure to AWS
-  if (stackDetected.cloud === 'aws' && jdWantsAny('AWS', 'Amazon Web Services', 'Amazon S3', 'EC2', 'Lambda', 'RDS') && resumeHas('Azure')) {
+  if (stackDetected.cloud === 'aws' && jdWantsAny('AWS', 'Amazon Web Services', 'Amazon S3', 'EC2', 'Lambda', 'RDS') && resumeHas('Azure') && jdText && (jdText.includes('AWS') || jdText.includes('Amazon') || jdText.includes('EC2'))) {
       // Longest phrases first
       [
         ['Azure API Management (APIM)', 'AWS API Gateway'],
