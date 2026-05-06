@@ -253,6 +253,8 @@ ABSOLUTE RULES:
 - No markdown bold (**text**) in bullet text — use techTerms array
 - Additions roughly balance removals (preserve page count)
 - All additions must be realistic and defensible in interviews
+- NEVER generate a swap where find is just "Azure" or "AWS" or "GCP" as a single word — this creates nonsense like "Microsoft AWS". Always use the FULL specific phrase that exists in the resume.
+- NEVER generate cloud swaps unless the JD explicitly names a DIFFERENT cloud than what is in the resume
 - Return ONLY valid JSON`,
 
     messages: [{
@@ -491,8 +493,23 @@ function applyToDocx(docxBuffer, instructions, resumeText, jdText) {
   ];
 
   function isSwapAllowed(findText, replaceText) {
-    const findLower = (findText || '').toLowerCase();
-    const replaceLower = (replaceText || '').toLowerCase();
+    const findLower = (findText || '').toLowerCase().trim();
+    const replaceLower = (replaceText || '').toLowerCase().trim();
+
+    // BLOCK generic single-word cloud swaps like "Azure" → "AWS"
+    // These cause nonsense like "Microsoft AWS", "AWS AD B2C" etc.
+    const genericCloudSwaps = [
+      ['azure', 'aws'], ['azure', 'amazon'], ['azure', 'gcp'], ['azure', 'google'],
+      ['aws', 'azure'], ['aws', 'gcp'], ['aws', 'google'],
+      ['gcp', 'azure'], ['gcp', 'aws'],
+    ];
+    for (const [from, to] of genericCloudSwaps) {
+      if (findLower === from && replaceLower === to) {
+        console.log(`BLOCKED generic swap: "${findText}" → "${replaceText}"`);
+        return false;
+      }
+    }
+
     for (const guard of cloudSwapGuards) {
       // Check if this swap matches a guarded pattern
       const isGuardedSwap = findLower.includes(guard.from) && replaceLower.includes(guard.to.split(' ')[0]);
