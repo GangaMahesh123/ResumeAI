@@ -181,7 +181,8 @@ STRICT RULES:
 
 PROCESS:
 STEP 1 — ANALYZE JD:
-Extract: required skills, preferred skills, domain needs, tools, cloud, frontend, backend, database, DevOps, testing, security requirements.
+Extract: required skills, preferred skills, role type (full_stack/backend/frontend/devops/data_engineer/ml_engineer), and role pattern (greenfield/migration/maintenance/modernization).
+For MIGRATION PATTERN jobs: keep legacy tech to show FROM state, frame bullets as migration narratives showing journey from old to new tech., preferred skills, domain needs, tools, cloud, frontend, backend, database, DevOps, testing, security requirements.
 
 STEP 2 — COMPARE JD vs RESUME:
 Identify:
@@ -347,7 +348,7 @@ function buildGuaranteedSwaps(stackDetected, resumeText, jdText) {
 
   // CLOUD SWAPS — only if JD explicitly mentions the target cloud
   // If JD says "AWS" or "Amazon" → swap Azure to AWS
-  if (stackDetected.cloud === 'aws' && jdWantsAny('AWS', 'Amazon Web Services', 'Amazon S3', 'EC2', 'Lambda', 'RDS') && resumeHas('Azure') && jdText && (jdText.includes('AWS') || jdText.includes('Amazon') || jdText.includes('EC2'))) {
+  if (stackDetected.cloud === 'aws' && jdWantsAny('AWS', 'Amazon Web Services', 'Amazon S3', 'EC2', 'Lambda', 'RDS') && resumeHas('Azure')) {
       // Longest phrases first
       [
         ['Azure API Management (APIM)', 'AWS API Gateway'],
