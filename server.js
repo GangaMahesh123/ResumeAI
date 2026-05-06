@@ -63,7 +63,86 @@ async function extractText(buffer, originalname) {
   throw new Error('Unsupported file type');
 }
 
-// ── XML helpers ───────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════
+// FIX 1: WORD BOUNDARY MATCH — prevents 'rds' matching 'standards'
+// ════════════════════════════════════════════════════════════════════
+function wordMatch(text, term) {
+  const tl = term.toLowerCase();
+  const txt = text.toLowerCase();
+  let idx = txt.indexOf(tl);
+  while (idx !== -1) {
+    const before = idx === 0 ? ' ' : txt[idx - 1];
+    const after = idx + tl.length >= txt.length ? ' ' : txt[idx + tl.length];
+    if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return true;
+    idx = txt.indexOf(tl, idx + 1);
+  }
+  return false;
+}
+function textHasAny(text, ...terms) {
+  return terms.some(t => wordMatch(text, t));
+}
+
+// ════════════════════════════════════════════════════════════════════
+// FIX 2: FUZZY MATCH — finds closest paragraph even with minor diffs
+// ════════════════════════════════════════════════════════════════════
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+  return dp[m][n];
+}
+
+function findClosestParagraph(paras, target, maxBoundary = Infinity) {
+  if (!target || target.length < 10) return null;
+  const t = target.toLowerCase().trim().slice(0, 60);
+  let best = null, bestScore = Infinity;
+  for (const para of paras) {
+    if (para.index >= maxBoundary) continue;
+    if (para.text.length < 20) continue;
+    const p = para.text.toLowerCase().slice(0, 60);
+    // Exact include first
+    if (para.text.toLowerCase().includes(t.slice(0, 40))) return para;
+    // Fuzzy fallback
+    const score = levenshtein(p, t);
+    if (score < bestScore && score < 30) { bestScore = score; best = para; }
+  }
+  return best;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// SCOPE HELPERS
+// ════════════════════════════════════════════════════════════════════
+const OLDER_MARKERS = [
+  'Fannie Mae','LuluLemon','Lulu Lemon','Infosys','Wipro','TCS',
+  'Cognizant','Accenture','Capgemini','Apollo','LAHD','Citigroup','Apple'
+];
+
+function getRecentText(resumeText) {
+  const lower = resumeText.toLowerCase();
+  const starts = ['professional experience','county of san bernardino','client:','work experience'];
+  let start = resumeText.length;
+  for (const m of starts) { const i = lower.indexOf(m); if (i > 0 && i < start) start = i; }
+  let end = resumeText.length;
+  for (const m of OLDER_MARKERS) { const i = lower.indexOf(m.toLowerCase()); if (i > 0 && i < end) end = i; }
+  return resumeText.slice(start, end);
+}
+
+function getOlderBoundary(xml, resumeText) {
+  for (const m of OLDER_MARKERS) {
+    if (resumeText.includes(m)) {
+      const idx = xml.indexOf(m);
+      if (idx > 0) return idx;
+    }
+  }
+  return xml.length;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// XML HELPERS
+// ════════════════════════════════════════════════════════════════════
 function extractParagraphs(xml) {
   const paras = [];
   const pRegex = /<w:p[ >][\s\S]*?<\/w:p>/g;
@@ -86,12 +165,10 @@ function buildBulletPara(text, techTerms, templateParaXml) {
   let baseRpr = rPrMatch ? rPrMatch[0] : '<w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr>';
   baseRpr = baseRpr.replace(/<w:b\/>/g, '').replace(/<w:bCs\/>/g, '');
   const boldRpr = baseRpr.replace('</w:rPr>', '<w:b/><w:bCs/></w:rPr>');
-
   const cleanText = text.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1');
   const sortedTerms = [...(techTerms || [])].sort((a, b) => b.length - a.length);
   let remaining = cleanText;
   const segments = [];
-
   while (remaining.length > 0) {
     let found = false;
     for (const term of sortedTerms) {
@@ -101,11 +178,10 @@ function buildBulletPara(text, techTerms, templateParaXml) {
     }
     if (!found) { segments.push({ text: remaining, bold: false }); remaining = ''; }
   }
-
   let runs = '';
   for (const seg of segments) {
     if (!seg.text) continue;
-    const escaped = seg.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escaped = seg.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     runs += `<w:r>${seg.bold ? boldRpr : baseRpr}<w:t${(seg.text.startsWith(' ') || seg.text.endsWith(' ')) ? ' xml:space="preserve"' : ''}>${escaped}</w:t></w:r>`;
   }
   return `<w:p>${pPr}${runs}</w:p>`;
@@ -130,400 +206,362 @@ function applyTextSwap(xml, findText, replaceText) {
   return xml;
 }
 
-function removeParagraph(xml, findText) {
-  if (!findText || findText.length < 10) return xml;
+function removeParagraph(xml, findText, boundary) {
   const paras = extractParagraphs(xml);
   for (const para of paras) {
-    if (para.text.includes(findText.slice(0, 50)))
+    if (para.index >= boundary) continue;
+    if (para.text.toLowerCase().includes(findText.toLowerCase().slice(0, 50)))
       return xml.slice(0, para.index) + xml.slice(para.index + para.xml.length);
   }
   return xml;
 }
 
-function insertAfterParagraph(xml, afterText, newParaXml, currentParas) {
-  const paras = currentParas || extractParagraphs(xml);
-  for (const para of paras) {
-    if (para.text.includes(afterText.slice(0, 50))) {
-      const pos = para.index + para.xml.length;
-      return xml.slice(0, pos) + newParaXml + xml.slice(pos);
-    }
-  }
-  return xml;
+// ════════════════════════════════════════════════════════════════════
+// FIX 3: CODE-BASED MATCH SCORE (not AI guess)
+// ════════════════════════════════════════════════════════════════════
+function calculateMatchScore(resumeText, jdText) {
+  const jdWords = jdText.toLowerCase().match(/\b[a-z][a-z0-9#.\-+]{2,}\b/g) || [];
+  const jdUnique = [...new Set(jdWords)].filter(w =>
+    w.length > 3 && !['with','that','this','from','have','will','your','their','they','been','more','also','into','than','when','what','which','about','after','before','through','between'].includes(w)
+  );
+  const resumeLower = resumeText.toLowerCase();
+  const matched = jdUnique.filter(w => resumeLower.includes(w));
+  return Math.min(95, Math.round((matched.length / Math.max(jdUnique.length, 1)) * 100));
 }
 
-// ── STEP 1: Claude analyzes JD and resume ────────────────────────────────────
-// Claude's ONLY job: identify missing keywords and weak points
-// Claude does NOT decide what to swap — the code handles swaps
+// ════════════════════════════════════════════════════════════════════
+// FIX 4: TECH SWAP DETECTION — pure logic, no AI, word-boundary safe
+// ════════════════════════════════════════════════════════════════════
+function detectTechSwaps(resumeText, jdText) {
+  const jd = jdText.toLowerCase();
+  const recentText = getRecentText(resumeText).toLowerCase();
+  const jdWants = (...terms) => textHasAny(jd, ...terms);
+  const recentHas = (...terms) => textHasAny(recentText, ...terms);
+  const swaps = [];
+
+  // CLOUD: Azure → AWS (only if JD wants AWS AND NOT Azure)
+  if (recentHas('azure') && jdWants('aws','amazon web services','ec2','lambda','dynamodb') && !jdWants('azure','microsoft azure')) {
+    swaps.push(
+      ['Azure API Management (APIM)','AWS API Gateway'],
+      ['Azure API Management','AWS API Gateway'],
+      ['Azure API Gateway (v2)','AWS API Gateway'],
+      ['Azure API Gateway','AWS API Gateway'],
+      ['Azure App Services','AWS Elastic Beanstalk'],
+      ['Azure Functions v4','AWS Lambda'],
+      ['Azure Functions','AWS Lambda'],
+      ['Azure Blob Storage','Amazon S3'],
+      ['Azure SQL Database','Amazon RDS'],
+      ['Azure SQL','Amazon RDS'],
+      ['Azure AD B2C','AWS Cognito'],
+      ['Azure AD','AWS IAM'],
+      ['Azure Monitor','Amazon CloudWatch'],
+      ['Application Insights','AWS CloudWatch Insights'],
+      ['Azure Key Vault','AWS Secrets Manager'],
+      ['Azure DevOps CI/CD pipelines','AWS CodePipeline CI/CD pipelines'],
+      ['Azure DevOps CI/CD','AWS CodePipeline'],
+      ['Azure DevOps','AWS CodePipeline'],
+      ['Azure Repos','AWS CodeCommit'],
+      ['Microsoft Azure','Amazon Web Services (AWS)'],
+      ['Azure services','AWS services']
+    );
+  }
+  // CLOUD: Azure → GCP
+  if (recentHas('azure') && jdWants('gcp','google cloud','bigquery','vertex ai','cloud run') && !jdWants('azure','microsoft azure')) {
+    swaps.push(
+      ['Azure API Management (APIM)','Google Cloud Apigee'],
+      ['Azure API Management','Google Cloud Apigee'],
+      ['Azure API Gateway','Google Cloud Endpoints'],
+      ['Azure App Services','Google Cloud Run'],
+      ['Azure Functions v4','Google Cloud Functions'],
+      ['Azure Functions','Google Cloud Functions'],
+      ['Azure Blob Storage','Google Cloud Storage'],
+      ['Azure SQL Database','Google Cloud SQL'],
+      ['Azure SQL','Google Cloud SQL'],
+      ['Azure AD B2C','Google Identity Platform'],
+      ['Azure AD','Google Cloud IAM'],
+      ['Azure Monitor','Google Cloud Monitoring'],
+      ['Application Insights','Google Cloud Trace'],
+      ['Azure Key Vault','Google Secret Manager'],
+      ['Azure DevOps CI/CD pipelines','Google Cloud Build CI/CD pipelines'],
+      ['Azure DevOps','Google Cloud Build'],
+      ['Azure Repos','Google Cloud Source Repositories'],
+      ['Microsoft Azure','Google Cloud Platform (GCP)'],
+      ['Azure services','GCP services']
+    );
+  }
+  // CLOUD: AWS → Azure
+  if (recentHas('amazon web services','aws elastic','aws lambda') && jdWants('azure','microsoft azure') && !jdWants('aws','amazon')) {
+    swaps.push(
+      ['AWS Elastic Beanstalk','Azure App Services'],['AWS Lambda','Azure Functions'],
+      ['AWS API Gateway','Azure API Management'],['Amazon S3','Azure Blob Storage'],
+      ['Amazon RDS','Azure SQL Database'],['AWS Cognito','Azure AD B2C'],
+      ['AWS IAM','Azure AD'],['Amazon CloudWatch','Azure Monitor'],
+      ['AWS Secrets Manager','Azure Key Vault'],['AWS CodePipeline','Azure DevOps'],
+      ['AWS CodeCommit','Azure Repos'],['Amazon Web Services (AWS)','Microsoft Azure']
+    );
+  }
+  // CLOUD: AWS → GCP
+  if (recentHas('amazon web services','aws') && jdWants('gcp','google cloud') && !jdWants('aws','amazon')) {
+    swaps.push(
+      ['AWS Elastic Beanstalk','Google Cloud Run'],['AWS Lambda','Google Cloud Functions'],
+      ['Amazon S3','Google Cloud Storage'],['Amazon RDS','Google Cloud SQL'],
+      ['AWS Cognito','Google Identity Platform'],['AWS IAM','Google Cloud IAM'],
+      ['Amazon CloudWatch','Google Cloud Monitoring'],['AWS CodePipeline','Google Cloud Build'],
+      ['Amazon Web Services (AWS)','Google Cloud Platform (GCP)']
+    );
+  }
+  // CLOUD: GCP → AWS
+  if (recentHas('google cloud','gcp') && jdWants('aws','amazon') && !jdWants('gcp','google cloud')) {
+    swaps.push(
+      ['Google Cloud Run','AWS Elastic Beanstalk'],['Google Cloud Functions','AWS Lambda'],
+      ['Google Cloud Storage','Amazon S3'],['Google Cloud SQL','Amazon RDS'],
+      ['Google Identity Platform','AWS Cognito'],['Google Cloud IAM','AWS IAM'],
+      ['Google Cloud Monitoring','Amazon CloudWatch'],['Google Cloud Build','AWS CodePipeline'],
+      ['Google Cloud Platform (GCP)','Amazon Web Services (AWS)']
+    );
+  }
+  // CLOUD: GCP → Azure
+  if (recentHas('google cloud','gcp') && jdWants('azure','microsoft azure') && !jdWants('gcp','google cloud')) {
+    swaps.push(
+      ['Google Cloud Run','Azure App Services'],['Google Cloud Functions','Azure Functions'],
+      ['Google Cloud Storage','Azure Blob Storage'],['Google Cloud SQL','Azure SQL Database'],
+      ['Google Identity Platform','Azure AD B2C'],['Google Cloud IAM','Azure AD'],
+      ['Google Cloud Monitoring','Azure Monitor'],['Google Cloud Build','Azure DevOps'],
+      ['Google Cloud Platform (GCP)','Microsoft Azure']
+    );
+  }
+
+  // FRONTEND: Angular → React (check recentHas to avoid old React.js blocking)
+  if (recentHas('angular') && !recentHas('react') && jdWants('react','reactjs','react.js') && !jdWants('angular')) {
+    swaps.push(
+      ['Angular 14 to Angular 18','React 17 to React 18'],
+      ['Angular 14\u201318','React 17\u201318'],
+      ['Angular 14, progressively upgrading to Angular 18','React 17, progressively upgrading to React 18'],
+      ['Angular 12 to Angular 15','React 16 to React 18'],
+      ['Angular 12\u201315','React 16\u201318'],
+      ['Angular (11\u201318)','React (16\u201318)'],
+      ['Angular 12 front-end','React 17 front-end'],
+      ['Angular 12 front','React 17 front'],
+      ['Angular 19','React 19'],['Angular 18','React 18'],
+      ['Angular 17','React 18'],['Angular 16','React 18'],
+      ['Angular 15','React 18'],['Angular 14','React 18'],
+      ['Angular 12','React 17'],['Angular 6','React 16'],
+      ['AngularJS','React.js'],['Angular','React'],
+      ['RxJS 7 to 8','Redux Toolkit'],['RxJS 7\u20138','Redux Toolkit'],
+      ['RxJS 7.x','Redux Toolkit'],['RxJS','Redux Toolkit'],
+      ['Karma','Jest'],['Jasmine','React Testing Library'],['Protractor','Cypress']
+    );
+  }
+  // FRONTEND: React → Angular
+  if (recentHas('react') && !recentHas('angular') && jdWants('angular') && !jdWants('react','reactjs')) {
+    swaps.push(
+      ['React 17 to React 18','Angular 14 to Angular 18'],
+      ['React 18','Angular 18'],['React 17','Angular 14'],['React 16','Angular 12'],
+      ['React.js','Angular'],['React','Angular'],
+      ['Redux Toolkit','RxJS'],['Redux','RxJS'],
+      ['Jest','Karma'],['React Testing Library','Jasmine'],['Cypress','Protractor']
+    );
+  }
+  // FRONTEND: Angular → Vue
+  if (recentHas('angular') && !recentHas('vue') && jdWants('vue','vue.js','vuejs') && !jdWants('angular')) {
+    swaps.push(
+      ['Angular 14 to Angular 18','Vue 2 to Vue 3'],
+      ['Angular 14','Vue 3'],['Angular 18','Vue 3'],['Angular 12','Vue 2'],
+      ['Angular','Vue.js'],['RxJS','Vuex / Pinia'],
+      ['Karma','Vitest'],['Jasmine','Vue Test Utils']
+    );
+  }
+
+  // Sort longest first, deduplicate
+  swaps.sort((a, b) => b[0].length - a[0].length);
+  const seen = new Set();
+  return swaps.filter(([f]) => { if (seen.has(f)) return false; seen.add(f); return true; });
+}
+
+// ════════════════════════════════════════════════════════════════════
+// FIX 5: SIMPLIFIED CLAUDE PROMPT — AI only extracts skills + bullets
+//         No insertAfter, no placement, no structural decisions
+// ════════════════════════════════════════════════════════════════════
 async function analyzeWithClaude(resumeText, jdText) {
-  const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 4000,
-    system: `You are a Resume Tailoring Assistant. Your goal is to make the resume match 92-95% of the JD requirements.
+  const attempt = async () => {
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 3000,
+      system: `You are a resume gap analyzer. Your ONLY job:
+1. Extract every skill/tool/technology from the JD
+2. Check which ones are MISSING from the resume
+3. For each missing skill — write a natural bullet point the candidate could add
+4. Identify weak/repeated/irrelevant bullets to remove
 
-YOUR ONLY JOBS:
-1. Go through EVERY skill/tool/technology in the JD one by one
-2. Check if each one exists in the resume
-3. If MISSING → add a bullet for it in the most relevant recent project
-4. If WEAK/REPEATED/IRRELEVANT → remove it
-
-YOU DO NOT handle technology swaps. The system handles swaps automatically.
-DO NOT suggest swapping cloud providers (Azure/AWS/GCP) or frontend frameworks (Angular/React/Vue).
-DO NOT generate swaps — only additions and removals.
-
-SYSTEMATIC PROCESS:
-Step 1: List ALL skills/tools mentioned in JD (every single one)
-Step 2: For each one, check if it exists in the resume
-Step 3: If missing AND important → create an "add" entry
-Step 4: Be comprehensive — do not stop after a few additions
-Step 5: Target 92-95% coverage of all JD requirements
-
-RULES FOR ADDITIONS:
-- Add ALL important missing JD skills — do not stop early
-- New bullets must match the candidate's writing style and seniority level
-- Only add to the 2 most recent jobs (not older clients)
-- insertAfter must be EXACT first 60 chars of an existing experience bullet
-- No markdown bold (**text**) — use techTerms array for bold terms
-- Each bullet must be realistic and defensible in an interview
-- Keep bullets concise — match the length of existing bullets
-
-RULES FOR REMOVALS:
-- Only remove if bullet is COMPLETELY irrelevant to this JD
-- Only remove weak/repeated/obvious statements
-- NEVER remove core technical achievements, architecture decisions, quantified results
-- NEVER remove primary tech stack bullets
-- Only remove from recent 2 projects, never older clients
-- Removals should roughly balance additions (preserve page count)
-
-VERSION RULES:
-- Any version added must match the project date range
-- Never use a version released after the project end date
-
-Return ONLY valid JSON.`,
-
-    messages: [{
-      role: 'user',
-      content: `Analyze this resume against the JD systematically. Go through EVERY JD skill one by one.
+STRICT RULES:
+- Do NOT suggest technology swaps (cloud/frontend/framework changes — handled by system)
+- Do NOT include insertAfter — the system handles placement automatically
+- Cover ALL missing JD skills — be thorough, target 92-95% match
+- New bullets must match the candidate's writing style and seniority
+- Bullets must be realistic — based on candidate's existing background
+- Only suggest removals from recent 2 projects
+- Never remove core achievements or primary tech stack bullets
+- Return ONLY valid JSON, no markdown`,
+      messages: [{
+        role: 'user',
+        content: `Analyze gaps between this resume and JD. Return missing skills as bullet suggestions.
 
 RESUME:
-${resumeText.slice(0, 6000)}
+${resumeText.slice(0, 5000)}
 
 JOB DESCRIPTION:
 ${jdText.slice(0, 2000)}
 
-INSTRUCTIONS:
-1. Extract every skill/tool/technology from the JD
-2. Check each one against the resume
-3. For every missing important skill → create an add entry
-4. Be thorough — cover ALL missing JD requirements, not just a few
-5. Target 92-95% JD match
-
-Return ONLY this JSON (no markdown):
+Return ONLY this JSON:
 {
-  "matchScoreBefore": <integer — honest current score>,
-  "matchScoreAfter": <integer — projected score after all additions>,
   "roleType": "full_stack|backend|frontend|devops|data_engineer|ml_engineer|other",
-  "jdSkillsChecked": ["skill1 ✅", "skill2 ❌ missing", "skill3 ✅"],
-  "remove": [
+  "missingSkills": [
     {
-      "find": "first 60 chars of bullet EXACTLY from resume",
-      "reason": "specific reason why irrelevant to THIS JD"
+      "skill": "skill name",
+      "bullet": "complete bullet text matching candidate writing style — no markdown bold",
+      "techTerms": ["Term1","Term2"],
+      "category": "frontend|backend|cloud|database|devops|testing|security|other"
     }
   ],
-  "add": [
+  "weakBullets": [
     {
-      "text": "new bullet text matching candidate writing style — no markdown bold",
-      "insertAfter": "first 60 chars of existing experience bullet EXACTLY from resume",
-      "techTerms": ["ExactTerm1", "ExactTerm2"],
-      "reason": "which JD keyword/skill this covers"
+      "snippet": "first 40 chars of weak bullet from resume",
+      "reason": "why irrelevant to this JD"
     }
   ],
-  "summary": "X% before, Y% after, key changes made"
+  "summary": "brief summary of gaps found"
 }`
-    }]
-  });
-
-  const raw = message.content.map(b => b.type === 'text' ? b.text : '').join('').trim();
-  try {
+      }]
+    });
+    const raw = message.content.map(b => b.type === 'text' ? b.text : '').join('').trim();
     const cleaned = raw.replace(/```json\n?|```\n?/g, '').trim();
-    const parsed = JSON.parse(cleaned.slice(cleaned.indexOf('{'), cleaned.lastIndexOf('}') + 1));
-    console.log(`Claude: ${parsed.remove?.length||0} removals, ${parsed.add?.length||0} additions, role: ${parsed.roleType}`);
-    return parsed;
-  } catch (e) {
-    console.error('Parse error:', e.message, raw.slice(0, 200));
-    return { remove: [], add: [], matchScoreBefore: 70, matchScoreAfter: 88, missingKeywords: [], summary: '' };
+    return JSON.parse(cleaned.slice(cleaned.indexOf('{'), cleaned.lastIndexOf('}') + 1));
+  };
+
+  // FIX 6: RETRY with fallback
+  for (let i = 0; i < 3; i++) {
+    try {
+      const result = await attempt();
+      console.log(`Claude: ${result.missingSkills?.length||0} missing, ${result.weakBullets?.length||0} weak`);
+      return result;
+    } catch (e) {
+      console.error(`Claude attempt ${i+1} failed:`, e.message);
+      if (i === 2) return { missingSkills: [], weakBullets: [], roleType: 'full_stack', summary: '' };
+    }
   }
 }
 
-// ── STEP 2: Detect tech mismatches from JD vs resume ─────────────────────────
-// This is where ALL swap decisions are made — based purely on JD text vs resume text
-// No AI involved in swap decisions — pure rule-based detection
-function detectSwaps(resumeText, jdText) {
-  const jd = jdText.toLowerCase();
-  const resume = resumeText.toLowerCase();
-  const swaps = [];
-
-  // Helper: does JD explicitly mention this term? (word boundary aware)
-  const jdHas = (...terms) => terms.some(t => {
-    const tl = t.toLowerCase();
-    const idx = jd.indexOf(tl);
-    if (idx === -1) return false;
-    // Check word boundaries - char before and after must not be alphanumeric
-    const before = idx === 0 ? ' ' : jd[idx - 1];
-    const after = idx + tl.length >= jd.length ? ' ' : jd[idx + tl.length];
-    return !/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after);
-  });
-  // Helper: does resume have this term?
-  const resumeHas = (...terms) => terms.some(t => resume.includes(t.toLowerCase()));
-
-  // ── CLOUD DETECTION ──────────────────────────────────────────────────────
-  // Only swap cloud if JD explicitly requires a DIFFERENT cloud than what resume has
-  // AND JD does NOT mention the resume's current cloud
-
-  if (resumeHas('azure', 'microsoft azure')) {
-    if (jdHas('aws', 'amazon web services', 'ec2', 'lambda', ' s3 ', 'rds') && !jdHas('azure', 'microsoft azure')) {
-      // Resume has Azure, JD wants ONLY AWS → swap
-      swaps.push(...[
-        ['Azure API Management (APIM)', 'AWS API Gateway'],
-        ['Azure API Management', 'AWS API Gateway'],
-        ['Azure API Gateway (v2)', 'AWS API Gateway'],
-        ['Azure API Gateway', 'AWS API Gateway'],
-        ['Azure App Services', 'AWS Elastic Beanstalk'],
-        ['Azure Functions v4', 'AWS Lambda'],
-        ['Azure Functions', 'AWS Lambda'],
-        ['Azure Blob Storage', 'Amazon S3'],
-        ['Azure SQL Database', 'Amazon RDS'],
-        ['Azure SQL', 'Amazon RDS'],
-        ['Azure AD B2C', 'AWS Cognito'],
-        ['Azure AD', 'AWS IAM'],
-        ['Azure Monitor', 'Amazon CloudWatch'],
-        ['Application Insights', 'AWS CloudWatch Insights'],
-        ['Azure Key Vault', 'AWS Secrets Manager'],
-        ['Azure DevOps CI/CD pipelines', 'AWS CodePipeline CI/CD pipelines'],
-        ['Azure DevOps CI/CD', 'AWS CodePipeline'],
-        ['Azure DevOps', 'AWS CodePipeline'],
-        ['Azure Repos', 'AWS CodeCommit'],
-        ['Microsoft Azure', 'Amazon Web Services (AWS)'],
-        ['Azure services', 'AWS services'],
-      ]);
-    } else if (jdHas('gcp', 'google cloud', 'vertex ai', 'bigquery', 'cloud run') && !jdHas('azure', 'microsoft azure')) {
-      // Resume has Azure, JD wants ONLY GCP → swap
-      swaps.push(...[
-        ['Azure API Management (APIM)', 'Google Cloud Apigee'],
-        ['Azure API Management', 'Google Cloud Apigee'],
-        ['Azure API Gateway', 'Google Cloud Endpoints'],
-        ['Azure App Services', 'Google Cloud Run'],
-        ['Azure Functions v4', 'Google Cloud Functions'],
-        ['Azure Functions', 'Google Cloud Functions'],
-        ['Azure Blob Storage', 'Google Cloud Storage'],
-        ['Azure SQL Database', 'Google Cloud SQL'],
-        ['Azure SQL', 'Google Cloud SQL'],
-        ['Azure AD B2C', 'Google Identity Platform'],
-        ['Azure AD', 'Google Cloud IAM'],
-        ['Azure Monitor', 'Google Cloud Monitoring'],
-        ['Application Insights', 'Google Cloud Trace'],
-        ['Azure Key Vault', 'Google Secret Manager'],
-        ['Azure DevOps CI/CD pipelines', 'Google Cloud Build CI/CD pipelines'],
-        ['Azure DevOps', 'Google Cloud Build'],
-        ['Azure Repos', 'Google Cloud Source Repositories'],
-        ['Microsoft Azure', 'Google Cloud Platform (GCP)'],
-        ['Azure services', 'GCP services'],
-      ]);
-    }
-    // If JD has Azure OR has no cloud requirement → NO cloud swap
+// ════════════════════════════════════════════════════════════════════
+// FIX 7: VALIDATION LAYER — validate and repair AI output
+// ════════════════════════════════════════════════════════════════════
+function validateAIOutput(aiOutput) {
+  if (!aiOutput || typeof aiOutput !== 'object') {
+    return { missingSkills: [], weakBullets: [], roleType: 'full_stack', summary: '' };
   }
-
-  if (resumeHas('amazon web services', ' aws ') && !resumeHas('azure')) {
-    if (jdHas('azure', 'microsoft azure') && !jdHas('aws', 'amazon')) {
-      swaps.push(...[
-        ['AWS Elastic Beanstalk', 'Azure App Services'],
-        ['AWS Lambda', 'Azure Functions'],
-        ['AWS API Gateway', 'Azure API Management'],
-        ['Amazon S3', 'Azure Blob Storage'],
-        ['Amazon RDS', 'Azure SQL Database'],
-        ['AWS Cognito', 'Azure AD B2C'],
-        ['AWS IAM', 'Azure AD'],
-        ['Amazon CloudWatch', 'Azure Monitor'],
-        ['AWS Secrets Manager', 'Azure Key Vault'],
-        ['AWS CodePipeline', 'Azure DevOps'],
-        ['AWS CodeCommit', 'Azure Repos'],
-        ['Amazon Web Services (AWS)', 'Microsoft Azure'],
-      ]);
-    } else if (jdHas('gcp', 'google cloud') && !jdHas('aws', 'amazon')) {
-      swaps.push(...[
-        ['AWS Elastic Beanstalk', 'Google Cloud Run'],
-        ['AWS Lambda', 'Google Cloud Functions'],
-        ['AWS API Gateway', 'Google Cloud Endpoints'],
-        ['Amazon S3', 'Google Cloud Storage'],
-        ['Amazon RDS', 'Google Cloud SQL'],
-        ['AWS Cognito', 'Google Identity Platform'],
-        ['AWS IAM', 'Google Cloud IAM'],
-        ['Amazon CloudWatch', 'Google Cloud Monitoring'],
-        ['AWS CodePipeline', 'Google Cloud Build'],
-        ['Amazon Web Services (AWS)', 'Google Cloud Platform (GCP)'],
-      ]);
-    }
-  }
-
-  if (resumeHas('google cloud', 'gcp')) {
-    if (jdHas('aws', 'amazon web services') && !jdHas('gcp', 'google cloud')) {
-      swaps.push(...[
-        ['Google Cloud Run', 'AWS Elastic Beanstalk'],
-        ['Google Cloud Functions', 'AWS Lambda'],
-        ['Google Cloud Endpoints', 'AWS API Gateway'],
-        ['Google Cloud Storage', 'Amazon S3'],
-        ['Google Cloud SQL', 'Amazon RDS'],
-        ['Google Identity Platform', 'AWS Cognito'],
-        ['Google Cloud IAM', 'AWS IAM'],
-        ['Google Cloud Monitoring', 'Amazon CloudWatch'],
-        ['Google Cloud Build', 'AWS CodePipeline'],
-        ['Google Cloud Platform (GCP)', 'Amazon Web Services (AWS)'],
-        ['GCP services', 'AWS services'],
-      ]);
-    } else if (jdHas('azure', 'microsoft azure') && !jdHas('gcp', 'google cloud')) {
-      swaps.push(...[
-        ['Google Cloud Run', 'Azure App Services'],
-        ['Google Cloud Functions', 'Azure Functions'],
-        ['Google Cloud Storage', 'Azure Blob Storage'],
-        ['Google Cloud SQL', 'Azure SQL Database'],
-        ['Google Identity Platform', 'Azure AD B2C'],
-        ['Google Cloud IAM', 'Azure AD'],
-        ['Google Cloud Monitoring', 'Azure Monitor'],
-        ['Google Cloud Build', 'Azure DevOps'],
-        ['Google Cloud Platform (GCP)', 'Microsoft Azure'],
-      ]);
-    }
-  }
-
-  // ── FRONTEND DETECTION ───────────────────────────────────────────────────
-  // Only swap frontend if JD explicitly requires a DIFFERENT framework
-
-  if (resumeHas('angular') && !resumeHas('react') &&
-      jdHas('react', 'react.js', 'reactjs') && !jdHas('angular')) {
-    swaps.push(...[
-      ['Angular 14 to Angular 18', 'React 17 to React 18'],
-      ['Angular 14\u201318', 'React 17\u201318'],
-      ['Angular 14, progressively upgrading to Angular 18', 'React 17, progressively upgrading to React 18'],
-      ['Angular 12 to Angular 15', 'React 16 to React 18'],
-      ['Angular 12\u201315', 'React 16\u201318'],
-      ['Angular (11\u201318)', 'React (16\u201318)'],
-      ['Angular 12 front-end', 'React 17 front-end'],
-      ['Angular 19', 'React 19'],
-      ['Angular 18', 'React 18'],
-      ['Angular 17', 'React 18'],
-      ['Angular 16', 'React 18'],
-      ['Angular 15', 'React 18'],
-      ['Angular 14', 'React 18'],
-      ['Angular 12', 'React 17'],
-      ['Angular 6', 'React 16'],
-      ['AngularJS', 'React.js'],
-      ['Angular', 'React'],
-      ['RxJS 7 to 8', 'Redux Toolkit'],
-      ['RxJS 7\u20138', 'Redux Toolkit'],
-      ['RxJS', 'Redux Toolkit'],
-      ['Karma', 'Jest'],
-      ['Jasmine', 'React Testing Library'],
-      ['Protractor', 'Cypress'],
-    ]);
-  }
-
-  if (resumeHas('react') && !resumeHas('angular') &&
-      jdHas('angular') && !jdHas('react')) {
-    swaps.push(...[
-      ['React 17 to React 18', 'Angular 14 to Angular 18'],
-      ['React 18', 'Angular 18'],
-      ['React 17', 'Angular 14'],
-      ['React.js', 'Angular'],
-      ['React', 'Angular'],
-      ['Redux Toolkit', 'RxJS'],
-      ['Jest', 'Karma'],
-      ['React Testing Library', 'Jasmine'],
-      ['Cypress', 'Protractor'],
-    ]);
-  }
-
-  if (resumeHas('angular') && jdHas('vue', 'vue.js', 'vuejs') && !jdHas('angular')) {
-    swaps.push(...[
-      ['Angular 14 to Angular 18', 'Vue 2 to Vue 3'],
-      ['Angular 18', 'Vue 3'], ['Angular 14', 'Vue 3'],
-      ['Angular 12', 'Vue 2'], ['Angular', 'Vue.js'],
-      ['RxJS', 'Vuex / Pinia'], ['Karma', 'Vitest'], ['Jasmine', 'Vue Test Utils'],
-    ]);
-  }
-
-  // Sort longest first so specific phrases replace before generic ones
-  swaps.sort((a, b) => b[0].length - a[0].length);
-
-  console.log(`Detected ${swaps.length} swaps from JD analysis`);
-  return swaps;
+  return {
+    roleType: aiOutput.roleType || 'full_stack',
+    summary: aiOutput.summary || '',
+    missingSkills: (aiOutput.missingSkills || []).filter(s =>
+      s && s.skill && s.bullet && s.bullet.length > 20 && s.bullet.length < 500
+    ),
+    weakBullets: (aiOutput.weakBullets || []).filter(w =>
+      w && w.snippet && w.snippet.length > 10
+    )
+  };
 }
 
-// ── STEP 3: Apply everything to DOCX ─────────────────────────────────────────
-function applyToDocx(docxBuffer, instructions, resumeText, jdText, detectedSwaps) {
+// ════════════════════════════════════════════════════════════════════
+// FIX 8: CODE-DRIVEN PLACEMENT — backend decides where bullets go
+//         No more insertAfter from AI — fuzzy match finds best position
+// ════════════════════════════════════════════════════════════════════
+function decidePlacement(skill, paras, olderBoundary, resumeText) {
+  const cat = (skill.category || '').toLowerCase();
+  const skillLower = (skill.skill || '').toLowerCase();
+  const bulletLower = (skill.bullet || '').toLowerCase();
+
+  // Find the most recent project's bullet paragraphs (before older boundary)
+  const recentParas = paras.filter(p => p.index < olderBoundary && p.text.length > 30);
+
+  // Try to find a contextually relevant paragraph based on category
+  const categoryKeywords = {
+    frontend: ['angular','react','vue','typescript','html','css','ui','frontend','interface','component','blazor'],
+    backend: ['api','service','microservice','rest','asp.net','entity framework','linq','mvc','minimal api'],
+    cloud: ['azure','aws','gcp','cloud','deploy','kubernetes','docker','container','app service'],
+    database: ['sql','database','postgresql','mongodb','cosmos','redis','query','stored procedure'],
+    devops: ['ci/cd','pipeline','jenkins','github actions','devops','terraform','bicep','iac','helm'],
+    testing: ['test','xunit','jest','karma','jasmine','unit test','integration test','selenium'],
+    security: ['oauth','jwt','auth','security','rbac','ad b2c','cognito','key vault','tls'],
+    other: []
+  };
+
+  const keywords = categoryKeywords[cat] || categoryKeywords.other;
+  const allKeywords = [...keywords, skillLower, ...bulletLower.split(' ').filter(w => w.length > 4)];
+
+  // Find best matching paragraph in recent projects
+  for (const kw of allKeywords) {
+    const match = recentParas.find(p => p.text.toLowerCase().includes(kw));
+    if (match) return match;
+  }
+
+  // Fallback: last bullet in first recent project
+  return recentParas[Math.floor(recentParas.length / 2)] || recentParas[recentParas.length - 1] || null;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// MAIN DOCX PROCESSOR
+// ════════════════════════════════════════════════════════════════════
+function applyToDocx(docxBuffer, analysis, resumeText, detectedSwaps) {
   const zip = new AdmZip(docxBuffer);
   const docEntry = zip.getEntry('word/document.xml');
-  if (!docEntry) throw new Error('Invalid DOCX');
+  if (!docEntry) throw new Error('Invalid DOCX file');
 
   let xml = docEntry.getData().toString('utf-8');
+  const olderBoundary = getOlderBoundary(xml, resumeText);
+  const swapsApplied = [], removedBullets = [], addedBullets = [];
 
-  // Find older clients boundary — NEVER touch beyond this
-  const olderClientMarkers = [
-    'Fannie Mae', 'LuluLemon', 'Lulu Lemon', 'Infosys', 'Wipro', 'TCS',
-    'Cognizant', 'Accenture', 'Capgemini', 'Apollo', 'LAHD', 'Citigroup', 'Apple'
-  ];
-  let olderBoundary = xml.length;
-  for (const marker of olderClientMarkers) {
-    if (resumeText.includes(marker)) {
-      const idx = xml.indexOf(marker);
-      if (idx > 0 && idx < olderBoundary) olderBoundary = idx;
-    }
-  }
-
-  const swapsApplied = [];
-  const removedBullets = [];
-  const addedBullets = [];
-
-  // Apply detected swaps ONLY before older boundary
+  // 1. Apply tech swaps before older boundary
   for (const [from, to] of detectedSwaps) {
     const before = xml.slice(0, olderBoundary);
     const older = xml.slice(olderBoundary);
     const newBefore = applyTextSwap(before, from, to);
     if (newBefore !== before) {
       xml = newBefore + older;
-      swapsApplied.push(`${from.slice(0, 35)} → ${to.slice(0, 35)}`);
+      swapsApplied.push(`${from.slice(0,35)} → ${to.slice(0,35)}`);
     }
   }
 
-  // Apply removals ONLY before older boundary
-  for (const removal of (instructions.remove || [])) {
-    if (!removal.find) continue;
-    const snippet = removal.find.trim().slice(0, 50);
-    const snippetIdx = xml.indexOf(snippet);
-    if (snippetIdx === -1 || snippetIdx >= olderBoundary) continue;
-    const newXml = removeParagraph(xml, snippet);
+  // 2. Remove weak bullets before older boundary
+  for (const weak of (analysis.weakBullets || [])) {
+    if (!weak.snippet || weak.snippet.length < 10) continue;
+    const newXml = removeParagraph(xml, weak.snippet, olderBoundary);
     if (newXml !== xml) {
       xml = newXml;
-      removedBullets.push(snippet);
-      // Update boundary after removal
-      olderBoundary = Math.max(0, olderBoundary - (xml.length - newXml.length + (xml.length - newXml.length)));
+      removedBullets.push(weak.snippet.slice(0, 50));
     }
   }
 
-  // Apply additions ONLY before older boundary
+  // 3. Add missing skill bullets — code decides placement (no insertAfter from AI)
   let currentParas = extractParagraphs(xml);
-  for (const addition of (instructions.add || [])) {
-    if (!addition.text || !addition.insertAfter) continue;
-    const afterSnippet = addition.insertAfter.trim().slice(0, 50);
-    const templatePara = currentParas.find(p =>
-      p.text.includes(afterSnippet) && p.index < olderBoundary
-    );
-    if (!templatePara) { console.log(`insertAfter not found: "${afterSnippet}"`); continue; }
-    const newBulletXml = buildBulletPara(addition.text, addition.techTerms || [], templatePara.xml);
-    const newXml = insertAfterParagraph(xml, afterSnippet, newBulletXml, currentParas);
-    if (newXml !== xml) {
-      xml = newXml;
-      addedBullets.push(addition.text.slice(0, 60));
-      currentParas = extractParagraphs(xml);
+  const addedSkills = new Set();
+
+  for (const skill of (analysis.missingSkills || [])) {
+    if (!skill.bullet || addedSkills.has(skill.skill)) continue;
+
+    // Use code-driven placement
+    const targetPara = decidePlacement(skill, currentParas, olderBoundary, resumeText);
+    if (!targetPara) {
+      console.log(`No placement found for: ${skill.skill}`);
+      continue;
     }
+
+    const newBulletXml = buildBulletPara(skill.bullet, skill.techTerms || [], targetPara.xml);
+    const insertPos = targetPara.index + targetPara.xml.length;
+    xml = xml.slice(0, insertPos) + newBulletXml + xml.slice(insertPos);
+    addedBullets.push(skill.bullet.slice(0, 60));
+    addedSkills.add(skill.skill);
+    currentParas = extractParagraphs(xml); // refresh after each insert
+
+    console.log(`Added [${skill.category}]: ${skill.skill}`);
   }
 
   zip.updateFile('word/document.xml', Buffer.from(xml, 'utf-8'));
@@ -579,19 +617,25 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
     const ext = path.extname(req.file.originalname).toLowerCase();
     const resumeText = await extractText(req.file.buffer, req.file.originalname);
 
-    // Step 1: Claude identifies missing keywords and weak points (NO swaps)
-    const analysis = await analyzeWithClaude(resumeText, jdText);
+    // Step 1: Code detects tech swaps (pure logic, no AI, word-boundary safe)
+    const detectedSwaps = detectTechSwaps(resumeText, jdText);
 
-    // Step 2: Code detects technology swaps from JD vs resume (rule-based, no AI)
-    const detectedSwaps = detectSwaps(resumeText, jdText);
+    // Step 2: Claude finds missing skills and weak bullets only (no placement, no swaps)
+    const rawAnalysis = await analyzeWithClaude(resumeText, jdText);
 
-    // Step 3: Apply everything to DOCX
+    // Step 3: Validate and repair AI output
+    const analysis = validateAIOutput(rawAnalysis);
+
+    // Step 4: Code-based match scores
+    const scoreBefore = calculateMatchScore(resumeText, jdText);
+
+    // Step 5: Apply to DOCX
     let docxBase64 = null;
     let swapsApplied = [], removedBullets = [], addedBullets = [];
 
     if (ext === '.docx') {
       try {
-        const result = applyToDocx(req.file.buffer, analysis, resumeText, jdText, detectedSwaps);
+        const result = applyToDocx(req.file.buffer, analysis, resumeText, detectedSwaps);
         docxBase64 = result.buffer.toString('base64');
         swapsApplied = result.swapsApplied;
         removedBullets = result.removedBullets;
@@ -600,17 +644,20 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
       } catch (err) { console.error('DOCX error:', err.message); }
     }
 
+    // Step 6: Code-based score after
+    const scoreAfter = Math.min(95, scoreBefore + swapsApplied.length * 2 + addedBullets.length * 3);
+
     const changes = [
       ...swapsApplied.map(s => ({ type: 'modified', description: `Tech updated: ${s}` })),
       ...removedBullets.map(r => ({ type: 'removed', description: `Removed: ${r}` })),
       ...addedBullets.map(a => ({ type: 'added', description: `Added: ${a}` })),
     ];
-    if (changes.length === 0) changes.push({ type: 'added', description: analysis.summary || 'Resume optimized' });
+    if (changes.length === 0) changes.push({ type: 'added', description: 'Resume analyzed — already well matched' });
 
     const entry = {
       id: `opt_${Date.now()}`,
       jdSnippet: jdText.slice(0, 200),
-      matchScore: analysis.matchScoreAfter || 93,
+      matchScore: scoreAfter,
       keywordsAdded: addedBullets.length + swapsApplied.length,
       createdAt: new Date().toISOString(),
       resumeOutput: resumeText
@@ -623,7 +670,8 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
       success: true,
       docxBase64,
       optimizedResume: resumeText,
-      matchScore: analysis.matchScoreAfter || 93,
+      matchScore: scoreAfter,
+      matchScoreBefore: scoreBefore,
       changes,
       keywordsAdded: addedBullets.length + swapsApplied.length,
       bulletsEnhanced: addedBullets.length,
