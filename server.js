@@ -63,197 +63,262 @@ async function extractText(buffer, originalname) {
   throw new Error('Unsupported file type');
 }
 
-// ── Extract all paragraph texts from XML ─────────────────────────────────────
+// ── XML helpers ───────────────────────────────────────────────────────────────
 function extractParagraphs(xml) {
-  const ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
   const paras = [];
   const pRegex = /<w:p[ >][\s\S]*?<\/w:p>/g;
   let match;
   while ((match = pRegex.exec(xml)) !== null) {
     const pXml = match[0];
-    const tRegex = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g;
     let text = '';
+    const tRegex = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g;
     let tMatch;
-    while ((tMatch = tRegex.exec(pXml)) !== null) {
-      text += tMatch[1];
-    }
+    while ((tMatch = tRegex.exec(pXml)) !== null) text += tMatch[1];
     paras.push({ text: text.trim(), xml: pXml, index: match.index });
   }
   return paras;
 }
 
-// ── Build a new bullet paragraph matching style of nearby paragraph ───────────
 function buildBulletPara(text, techTerms, templateParaXml) {
-  // Extract pPr from template
   const pPrMatch = templateParaXml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
   const pPr = pPrMatch ? pPrMatch[0] : '<w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr><w:jc w:val="both"/></w:pPr>';
-
-  // Extract base rPr from template (remove bold)
   const rPrMatch = templateParaXml.match(/<w:rPr>[\s\S]*?<\/w:rPr>/);
   let baseRpr = rPrMatch ? rPrMatch[0] : '<w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr>';
-  // Remove any existing bold from base
   baseRpr = baseRpr.replace(/<w:b\/>/g, '').replace(/<w:bCs\/>/g, '');
-
-  // Bold rPr = base with bold added
   const boldRpr = baseRpr.replace('</w:rPr>', '<w:b/><w:bCs/></w:rPr>');
 
-  // Split text into bold/normal segments based on techTerms
+  const cleanText = text.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1');
   const sortedTerms = [...(techTerms || [])].sort((a, b) => b.length - a.length);
-  let remaining = text;
+  let remaining = cleanText;
   const segments = [];
 
   while (remaining.length > 0) {
     let found = false;
     for (const term of sortedTerms) {
       const idx = remaining.indexOf(term);
-      if (idx === 0) {
-        segments.push({ text: term, bold: true });
-        remaining = remaining.slice(term.length);
-        found = true;
-        break;
-      } else if (idx > 0) {
-        segments.push({ text: remaining.slice(0, idx), bold: false });
-        segments.push({ text: term, bold: true });
-        remaining = remaining.slice(idx + term.length);
-        found = true;
-        break;
-      }
+      if (idx === 0) { segments.push({ text: term, bold: true }); remaining = remaining.slice(term.length); found = true; break; }
+      if (idx > 0) { segments.push({ text: remaining.slice(0, idx), bold: false }); segments.push({ text: term, bold: true }); remaining = remaining.slice(idx + term.length); found = true; break; }
     }
-    if (!found) {
-      segments.push({ text: remaining, bold: false });
-      remaining = '';
-    }
+    if (!found) { segments.push({ text: remaining, bold: false }); remaining = ''; }
   }
 
-  // Build XML runs
   let runs = '';
   for (const seg of segments) {
     if (!seg.text) continue;
-    const rpr = seg.bold ? boldRpr : baseRpr;
-    const hasSpace = seg.text.startsWith(' ') || seg.text.endsWith(' ');
-    const spaceAttr = hasSpace ? ' xml:space="preserve"' : '';
-    const escaped = seg.text
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    runs += `<w:r>${rpr}<w:t${spaceAttr}>${escaped}</w:t></w:r>`;
+    const escaped = seg.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    runs += `<w:r>${seg.bold ? boldRpr : baseRpr}<w:t${(seg.text.startsWith(' ') || seg.text.endsWith(' ')) ? ' xml:space="preserve"' : ''}>${escaped}</w:t></w:r>`;
   }
-
   return `<w:p>${pPr}${runs}</w:p>`;
 }
 
-// ── Apply swap to XML text-runs: finds paragraphs containing text and swaps ───
 function applyTextSwap(xml, findText, replaceText) {
   if (!findText || !replaceText || findText.trim() === replaceText.trim()) return xml;
-
-  // Simple string replace — works when text is in single run
-  if (xml.includes(findText)) {
-    return xml.split(findText).join(replaceText);
-  }
-
-  // If not found as-is, try to find it across broken runs by rebuilding
-  // Check if it appears in extracted text (split across runs)
+  if (xml.includes(findText)) return xml.split(findText).join(replaceText);
   const paras = extractParagraphs(xml);
   for (const para of paras) {
     if (para.text.includes(findText)) {
-      // Rebuild this paragraph's runs with the swap applied
-      const newParaText = para.text.split(findText).join(replaceText);
-      // Replace entire paragraph content — preserve pPr, rebuild runs
-      const pPrMatch = para.xml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
-      const pPr = pPrMatch ? pPrMatch[0] : '';
-      const rPrMatch = para.xml.match(/<w:rPr>[\s\S]*?<\/w:rPr>/);
-      const baseRpr = rPrMatch ? rPrMatch[0].replace(/<w:b\/>/g, '').replace(/<w:bCs\/>/g, '') : '<w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr>';
-      const escaped = newParaText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const newRun = `<w:r>${baseRpr}<w:t xml:space="preserve">${escaped}</w:t></w:r>`;
-      const newPara = `<w:p>${pPr}${newRun}</w:p>`;
-      xml = xml.slice(0, para.index) + newPara + xml.slice(para.index + para.xml.length);
+      const newText = para.text.split(findText).join(replaceText);
+      const pPrM = para.xml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
+      const rPrM = para.xml.match(/<w:rPr>[\s\S]*?<\/w:rPr>/);
+      const pPr = pPrM ? pPrM[0] : '';
+      const rPr = rPrM ? rPrM[0].replace(/<w:b\/>/g,'').replace(/<w:bCs\/>/g,'') : '<w:rPr><w:sz w:val="20"/></w:rPr>';
+      const escaped = newText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      xml = xml.slice(0, para.index) + `<w:p>${pPr}<w:r>${rPr}<w:t xml:space="preserve">${escaped}</w:t></w:r></w:p>` + xml.slice(para.index + para.xml.length);
       break;
     }
   }
   return xml;
 }
 
-// ── Remove paragraph containing text ─────────────────────────────────────────
 function removeParagraph(xml, findText) {
   if (!findText || findText.length < 10) return xml;
   const paras = extractParagraphs(xml);
   for (const para of paras) {
-    if (para.text.includes(findText.slice(0, 50))) {
-      xml = xml.slice(0, para.index) + xml.slice(para.index + para.xml.length);
-      return xml;
-    }
+    if (para.text.includes(findText.slice(0, 50)))
+      return xml.slice(0, para.index) + xml.slice(para.index + para.xml.length);
   }
   return xml;
 }
 
-// ── Insert paragraph after one containing text ────────────────────────────────
-function insertAfterParagraph(xml, afterText, newParaXml) {
-  if (!afterText || afterText.length < 10) return xml;
-  const paras = extractParagraphs(xml);
+function insertAfterParagraph(xml, afterText, newParaXml, currentParas) {
+  const paras = currentParas || extractParagraphs(xml);
   for (const para of paras) {
     if (para.text.includes(afterText.slice(0, 50))) {
-      const insertPos = para.index + para.xml.length;
-      xml = xml.slice(0, insertPos) + newParaXml + xml.slice(insertPos);
-      return xml;
+      const pos = para.index + para.xml.length;
+      return xml.slice(0, pos) + newParaXml + xml.slice(pos);
     }
   }
   return xml;
 }
 
-// ── CLAUDE: Analyze resume vs JD, return precise editing plan ────────────────
+// ── CLAUDE: Full intelligent analysis ────────────────────────────────────────
 async function analyzeWithClaude(resumeText, jdText) {
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 4000,
-    system: `You are a world-class ATS resume optimizer. Your goal: make the resume score 92-95% against the JD.
+    system: `You are a world-class ATS resume optimizer. Goal: make ANY resume score 92-95% against ANY JD, for ANY technology domain.
 
-STEP 1 - UNDERSTAND THE ROLE:
-Read the JD carefully. Determine if it is: frontend only, backend only, full stack, DevOps, data engineering, etc.
-This determines what is relevant vs irrelevant in the resume.
-IMPORTANT: If the JD is full stack — frontend skills are relevant. If the JD is pure backend/DevOps — frontend skills are irrelevant.
+WHAT YOU MUST UPDATE (all 4 sections):
+1. PROFESSIONAL SUMMARY — update to reflect JD's required tech stack, role focus, and key skills
+2. TECHNICAL SKILLS — update skill names to match JD (e.g. replace "Angular" with "React" in skills list)
+3. EXPERIENCE BULLETS — swap tech, add missing keywords, remove irrelevant (recent 2 jobs only)
+4. ENVIRONMENT LINES — update tech list at bottom of each recent project to match swapped stack
 
-STEP 2 - SCORE: Calculate current ATS match % by checking how many JD keywords exist in resume.
+STEP 1 — UNDERSTAND THE ROLE TYPE AND PATTERN:
 
-STEP 3 - REMOVE (only truly irrelevant bullets):
-REMOVE ONLY if ALL of these are true:
-  a) The skill/tool is NOT mentioned in the JD at all
-  b) The skill is NOT related to the role type (e.g. Karma/Jasmine/Protractor in a DevOps JD)
-  c) It is a basic obvious statement (e.g. "used JSON for data exchange") OR repeated elsewhere OR 10+ yr old tech
-NEVER REMOVE:
-  - Core technical achievements (migrations, architecture, API development, cloud deployments)
-  - Primary tech stack bullets that match the JD's core requirements
-  - Frontend skills if the JD is full stack or mentions frontend
-  - Security, testing framework, CI/CD implementations
-  - Quantified results or business impact
-  - Anything that directly matches a JD keyword
+ROLE TYPE (determines what is relevant vs irrelevant):
+- full_stack: frontend + backend + cloud all relevant
+- backend: backend + cloud + DB relevant; pure frontend (CSS/Bootstrap/UI) less relevant
+- frontend: frontend frameworks + UI relevant; pure backend/DevOps less relevant
+- devops: cloud + containers + IaC + CI/CD relevant; frontend/UI irrelevant
+- data_engineer: Spark, Airflow, dbt, Snowflake, ETL/ELT, data pipelines relevant; frontend/UI irrelevant
+- data_scientist: Python, ML frameworks, Jupyter, statistics, model training relevant; DevOps/IaC less relevant
+- ml_engineer: ML frameworks + cloud ML services + model serving + containers relevant
+- mlops: MLflow, Kubeflow, model monitoring, CI/CD for ML, feature stores relevant
+- ai_engineer: LLMs, LangChain, vector databases, prompt engineering, RAG relevant
 
-STEP 4 - ADD (missing JD keywords):
-For every important JD keyword NOT in the resume, add a natural bullet in the 2 most recent jobs.
-Each new bullet must:
-  - Sound exactly like the candidate wrote it (match their tone, length, verb style)
-  - Be plausible given the candidate's existing experience
-  - Include the exact JD keyword bolded
-  - Go after the most contextually relevant existing bullet
+ROLE-SPECIFIC RELEVANCE RULES:
+data_engineer: KEEP data pipelines, ETL, SQL, cloud storage, orchestration. REMOVE frontend, pure UI, non-data tools.
+data_scientist: KEEP Python, ML frameworks, statistical analysis, notebooks, visualization. REMOVE DevOps, IaC, frontend.
+ml_engineer: KEEP ML frameworks, model serving, containers, cloud ML services, APIs. REMOVE pure frontend, non-ML tools.
+mlops: KEEP CI/CD, containers, model monitoring, feature stores, cloud. REMOVE frontend, pure UI.
+ai_engineer: KEEP LLMs, vector DBs, embeddings, RAG, APIs, Python. REMOVE unrelated legacy tech.
 
-STEP 5 - SWAP: Only swap if JD clearly requires DIFFERENT tech. If JD says "AWS or Azure" — keep Azure. If JD says only React — swap Angular.
+ROLE PATTERN (affects how bullets are written):
+- greenfield: new build from scratch
+- migration: moving from old to new tech (special handling below)
+- maintenance: supporting existing systems
+- modernization: upgrading legacy systems
+- support: production support focus
 
-STEP 6 - VERIFY: After changes, score must be 92-95%. Add more bullets if not enough.
+MIGRATION PATTERN (special handling):
+If the JD involves migration (keywords: migrate, migration, modernize, re-architect, legacy, lift-and-shift, transition, refactor):
+- KEEP the legacy technology — it shows what they migrated FROM
+- Frame bullets as migration narratives: "Migrated X to Y, achieving Z"
+- Use migration verbs: migrated, re-architected, modernized, transitioned, refactored
+- Show BOTH starting point AND end result in bullets
+- Add migration-specific bullets: planning, risk mitigation, zero-downtime, rollback planning
+- Include business outcomes: cost reduction, performance improvement, scalability gains
+- DO NOT simply replace legacy tech — show the journey from old to new
+
+STEP 2 — SCAN ALL TECHNOLOGY CATEGORIES FOR MISMATCHES:
+Compare resume vs JD across EVERY category:
+- Cloud: AWS, Azure, GCP, Oracle Cloud
+- Frontend: React, Angular, Vue, Svelte, Blazor
+- Backend: ASP.NET Core, Spring Boot, Django, Express, Laravel, FastAPI, Rails
+- Database: SQL Server, PostgreSQL, MySQL, MongoDB, DynamoDB, Cassandra, Oracle, Redis, Cosmos DB
+- ORM: Entity Framework, Hibernate, Sequelize, SQLAlchemy, Prisma, TypeORM
+- Messaging: Kafka, RabbitMQ, SQS, SNS, Azure Service Bus, NATS, Pulsar
+- Testing: xUnit, NUnit, JUnit, Jest, Pytest, Mocha, Karma, Jasmine, Vitest
+- CI/CD: Azure DevOps, Jenkins, GitHub Actions, GitLab CI, CircleCI, AWS CodePipeline, Bitbucket Pipelines
+- Auth: OAuth/JWT, Azure AD, AWS Cognito, Okta, Auth0, Keycloak
+- Monitoring: Azure Monitor, CloudWatch, Datadog, Splunk, Prometheus, Grafana, New Relic
+- Containers: Docker, Kubernetes, ECS, AKS, GKE, Helm
+- IaC: Terraform, Ansible, CloudFormation, Pulumi, ARM Templates
+- Version control: Git, SVN, TFS, Mercurial
+- ML frameworks: TensorFlow, PyTorch, Scikit-learn, Keras, XGBoost, LightGBM, CatBoost
+- ML platforms: AWS SageMaker, Azure ML, Google Vertex AI, Databricks, H2O.ai
+- MLOps tools: MLflow, Kubeflow, Weights & Biases, DVC, BentoML, Seldon, KServe
+- Data processing: Apache Spark, Pandas, Dask, Ray, Polars, PySpark
+- Data pipeline/orchestration: Apache Airflow, dbt, Prefect, Dagster, Luigi, Mage
+- Data warehouse: Snowflake, BigQuery, Redshift, Azure Synapse, Databricks SQL
+- Feature store: Feast, Tecton, Hopsworks, SageMaker Feature Store
+- Vector DB: Pinecone, Weaviate, Qdrant, Chroma, pgvector, Milvus
+- LLM/GenAI: LangChain, LlamaIndex, OpenAI, Hugging Face, Ollama, RAG
+- Data formats: Delta Lake, Apache Iceberg, Apache Parquet, Apache Avro
+- BI/Visualization: Tableau, Power BI, Grafana, Plotly, Matplotlib, Seaborn
+- Statistical/notebook: Jupyter, R, MATLAB, SAS, SPSS
+
+STEP 3 — GENERATE SWAPS FOR ALL MISMATCHES:
+For each mismatch, generate exact swap pairs covering:
+- All mentions in experience bullets
+- All mentions in environment lines
+- All mentions in technical skills section
+- All mentions in professional summary
+- Scope: recent_only for experience, full_document for summary and skills
+
+STEP 4 — REMOVE IRRELEVANT BULLETS (experience sections only):
+REMOVE if: completely unrelated to role type AND (basic/obvious OR repeated OR 10yr+ outdated)
+NEVER REMOVE: core achievements, architecture, API/cloud/security work, quantified results, primary tech
+
+STEP 5 — ADD MISSING KEYWORDS (experience sections only, recent 2 jobs):
+Add bullets for every important JD keyword not in resume.
+Must: match candidate writing style, be plausible given background, use exact JD keyword, go after most relevant existing bullet.
+
+STEP 6 — VERIFY: Ensure 92-95% match. Add more if needed.
+
+STEP 7 — VERSION ALIGNMENT (CRITICAL):
+Every version number must be validated against the PROJECT DATE RANGE it appears in.
+
+FIRST: Extract each project's date range from the resume (e.g. "Aug 2023 - Present", "Jan 2021 - Aug 2023").
+"Present" means today's date (2025).
+
+FOR EACH PROJECT, validate all versions:
+1. The version must have been RELEASED and STABLE before or during that project period
+2. NEVER use a version released AFTER the project end date
+3. NEVER downgrade — if resume has a higher valid version, keep it
+
+MIGRATION PROJECT SPECIAL RULE:
+If a project contains migration bullets (keywords: migrated, re-architected, upgraded, transitioned):
+- The FROM version must predate or match the project START date
+- The TO version must have been released by the project END date
+- Example: Project Jan 2021-Aug 2023 migrating Angular → React:
+  - FROM: Angular 12 (released 2021) ✅ matches project start
+  - TO: React 18 (released 2022) ✅ released before project end Aug 2023
+  - WRONG TO: React 19 (released 2024) ❌ after project end
+
+VERSION RELEASE TIMELINE (validate every version against this):
+React: 16 (Sep 2017), 17 (Oct 2020), 18 (Mar 2022), 19 (Dec 2024)
+Angular: 6 (May 2018), 8 (May 2019), 10 (Jun 2020), 12 (May 2021), 13 (Nov 2021), 14 (Jun 2022), 15 (Nov 2022), 16 (May 2023), 17 (Nov 2023), 18 (May 2024), 19 (Nov 2024)
+Vue: 2 (Sep 2016), 3 (Sep 2020)
+.NET Core/5+: 5 (Nov 2020), 6 (Nov 2021), 7 (Nov 2022), 8 (Nov 2023), 9 (Nov 2024)
+.NET Framework: 4.5 (2012), 4.6 (2015), 4.7 (2017), 4.8 (2019) — no new versions after 4.8
+Java: 8 (2014), 11 (Sep 2018), 17 (Sep 2021), 21 (Sep 2023)
+Python: 3.8 (Oct 2019), 3.9 (Oct 2020), 3.10 (Oct 2021), 3.11 (Oct 2022), 3.12 (Oct 2023), 3.13 (Oct 2024)
+Node.js: 14 (Apr 2020), 16 (Apr 2021), 18 (Apr 2022), 20 (Apr 2023), 22 (Apr 2024)
+Kubernetes: 1.20 (Dec 2020), 1.22 (Aug 2021), 1.24 (May 2022), 1.26 (Dec 2022), 1.28 (Aug 2023), 1.30 (Apr 2024)
+PostgreSQL: 13 (Sep 2020), 14 (Sep 2021), 15 (Oct 2022), 16 (Sep 2023), 17 (Sep 2024)
+MongoDB: 5 (Jul 2021), 6 (Jul 2022), 7 (Aug 2023), 8 (Aug 2024)
+TypeScript: 4.0 (Aug 2020), 4.5 (Nov 2021), 4.9 (Nov 2022), 5.0 (Mar 2023), 5.3 (Nov 2023), 5.6 (Sep 2024)
+Spring Boot: 2.5 (2021), 2.7 (2022), 3.0 (Nov 2022), 3.1 (May 2023), 3.2 (Nov 2023), 3.3 (May 2024)
+Entity Framework Core: 5 (2020), 6 (2021), 7 (2022), 8 (2023), 9 (2024)
+TensorFlow: 1.0 (2017), 2.0 (Oct 2019), 2.10 (Sep 2022), 2.12 (Mar 2023), 2.15 (Nov 2023), 2.17 (2024)
+PyTorch: 1.0 (Dec 2018), 1.9 (Jun 2021), 2.0 (Mar 2023), 2.1 (Oct 2023), 2.3 (Apr 2024)
+Scikit-learn: 0.24 (2020), 1.0 (Oct 2021), 1.2 (Jan 2023), 1.3 (Jun 2023), 1.4 (Jan 2024)
+Apache Spark: 2.4 (2018), 3.0 (Jun 2020), 3.1 (Mar 2021), 3.2 (Oct 2021), 3.3 (Jun 2022), 3.4 (Apr 2023), 3.5 (Sep 2023)
+Apache Airflow: 1.10 (2018), 2.0 (Dec 2020), 2.3 (Apr 2022), 2.5 (Dec 2022), 2.7 (Aug 2023), 2.9 (Apr 2024)
+MLflow: 1.0 (Jun 2019), 1.20 (2021), 2.0 (Oct 2022), 2.5 (Jun 2023), 2.9 (Dec 2023), 2.12 (2024)
+Kubeflow: 1.0 (Mar 2020), 1.4 (Nov 2021), 1.6 (Sep 2022), 1.7 (Mar 2023), 1.8 (Nov 2023)
+dbt: 0.20 (2021), 1.0 (Dec 2021), 1.3 (Oct 2022), 1.5 (Apr 2023), 1.7 (Nov 2023), 1.8 (May 2024)
+Databricks Runtime: 9 (2021), 10 (2021), 11 (2022), 12 (2022), 13 (2023), 14 (2023), 15 (2024)
+Snowflake: continuous releases (available from 2012, major adoption 2019+)
+LangChain: 0.0.1 (Jan 2023), 0.1 (Jan 2024), 0.2 (May 2024), 0.3 (Sep 2024)
+Hugging Face Transformers: 4.0 (Dec 2020), 4.20 (Jun 2022), 4.30 (May 2023), 4.40 (Apr 2024)
+Ray: 1.0 (2020), 2.0 (Sep 2022), 2.5 (Jun 2023), 2.9 (Jan 2024)
+Great Expectations: 0.13 (2020), 0.15 (2022), 1.0 (2023)
+Delta Lake: 1.0 (2021), 2.0 (Jul 2022), 2.4 (Jun 2023), 3.0 (Oct 2023)
+Apache Kafka: 2.7 (2020), 2.8 (2021), 3.0 (Sep 2021), 3.3 (Sep 2022), 3.5 (Jun 2023), 3.6 (Oct 2023), 3.7 (Mar 2024)
+
+VALIDATION EXAMPLES:
+- Project Aug 2023-Present, adding React 18 → ✅ React 18 released Mar 2022
+- Project Jan 2021-Aug 2023, adding React 18 → ✅ React 18 released Mar 2022, before Aug 2023
+- Project Jan 2021-Aug 2023, adding Angular 18 → ❌ Angular 18 released May 2024, AFTER project end → use Angular 15 instead
+- Project Aug 2023-Present, adding .NET 8 → ✅ .NET 8 released Nov 2023
+- Project Jan 2021-Aug 2023, adding .NET 8 → ❌ .NET 8 released Nov 2023, AFTER project end → use .NET 7 instead
+- Migration project Jan 2021-Aug 2023, Angular 12 → React 17 → ✅ both valid for that period
 
 ABSOLUTE RULES:
-- insertAfter: COPY FIRST 60 CHARS EXACTLY from existing resume bullet
-- find (swaps/removals): COPY EXACTLY from resume — must exist verbatim
-- techTerms: every tech name that should be bold in new bullet
-- New bullets match candidate writing style and seniority
-- Removals and additions roughly balance (same page count)
+- find/replace: must exist VERBATIM in resume text
+- insertAfter: COPY FIRST 60 CHARS EXACTLY from existing experience bullet (NOT summary)
+- No markdown bold in bullet text — use techTerms array
+- Additions ≈ removals in lines (preserve page count)
+- ALL changes must be realistic — no fabricated experience
+- Version numbers must be consistent across all sections
 - Return ONLY valid JSON`,
+
     messages: [{
       role: 'user',
-      content: `Score this resume against the JD, then produce a complete editing plan to reach 92-95% ATS match.
-
-CRITICAL INSTRUCTION FOR ADDITIONS:
-- Add new bullets ONLY in the Professional Experience sections (the 2 most recent jobs)
-- DO NOT add to Professional Summary
-- The insertAfter field must reference a bullet from the experience section, NOT from the summary
-- Experience bullets start with action verbs like "Implemented", "Designed", "Developed", "Integrated", "Built", "Managed"
-- DO NOT use markdown bold (**text**) in bullet text — just write plain text, list tech terms separately in techTerms array
+      content: `Produce a complete editing plan covering all 4 sections (Summary, Skills, Experience, Environment) to reach 92-95% ATS match.
 
 RESUME:
 ${resumeText.slice(0, 6000)}
@@ -263,37 +328,36 @@ ${jdText.slice(0, 2000)}
 
 Return ONLY this JSON (no markdown):
 {
-  "matchScoreBefore": 72,
-  "matchScoreAfter": 93,
-  "stackDetected": {
-    "cloud": "aws|azure|gcp|none",
-    "frontend": "react|angular|vue|none",
-    "backend": "dotnet|java|node|python|none",
-    "cicd": "jenkins|github_actions|azure_devops|none"
-  },
+  "matchScoreBefore": <integer>,
+  "matchScoreAfter": <integer 92-95>,
+  "roleType": "full stack | backend | frontend | devops | data | other",
+  "techMismatches": [
+    { "resumeHas": "exact term in resume", "jdWants": "exact term in JD", "category": "cloud|frontend|backend|database|orm|messaging|testing|cicd|auth|monitoring|containers|iac|other" }
+  ],
   "swaps": [
     {
-      "find": "exact verbatim text from resume that must exist",
+      "find": "exact verbatim text from resume",
       "replace": "replacement with JD technology",
-      "scope": "recent_only",
-      "reason": "why"
+      "scope": "recent_only | full_document",
+      "section": "experience | skills | summary | environment",
+      "reason": "brief reason"
     }
   ],
   "remove": [
     {
-      "find": "first 60 chars of bullet copied exactly from resume",
+      "find": "first 60 chars of bullet copied EXACTLY from resume",
       "reason": "specific reason why irrelevant to THIS JD"
     }
   ],
   "add": [
     {
-      "text": "complete new bullet plain text no markdown bold — matching candidate writing style",
-      "insertAfter": "first 60 chars of an EXPERIENCE SECTION bullet — copied exactly from resume (NOT from summary)",
+      "text": "complete new bullet plain text matching candidate writing style",
+      "insertAfter": "first 60 chars of existing EXPERIENCE bullet copied EXACTLY from resume",
       "techTerms": ["ExactTerm1", "ExactTerm2"],
       "reason": "which JD keyword this covers"
     }
   ],
-  "summary": "Score before X%, changes made, score after Y%"
+  "summary": "Score X% before. Key changes made. Score Y% after."
 }`
     }]
   });
@@ -304,161 +368,65 @@ Return ONLY this JSON (no markdown):
     const firstBrace = cleaned.indexOf('{');
     const lastBrace = cleaned.lastIndexOf('}');
     const parsed = JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
-    console.log(`Claude plan: ${parsed.swaps?.length||0} swaps, ${parsed.remove?.length||0} removals, ${parsed.add?.length||0} additions, score ${parsed.matchScoreBefore}->${ parsed.matchScoreAfter}`);
+    console.log(`Plan: ${parsed.swaps?.length||0} swaps, ${parsed.remove?.length||0} removals, ${parsed.add?.length||0} additions`);
+    console.log(`Role: ${parsed.roleType}, Mismatches: ${parsed.techMismatches?.length||0}`);
     return parsed;
   } catch (e) {
-    console.error('Claude parse error:', e.message, raw.slice(0, 300));
-    return { swaps: [], remove: [], add: [], matchScoreBefore: 70, matchScoreAfter: 88, stackDetected: {}, summary: '' };
+    console.error('Parse error:', e.message, raw.slice(0, 200));
+    return { swaps: [], remove: [], add: [], matchScoreBefore: 70, matchScoreAfter: 88, techMismatches: [], summary: '' };
   }
 }
-
-// ── Hardcoded tech stack swap maps ───────────────────────────────────────────
-const AZURE_TO_AWS = [
-  ['Azure App Services', 'AWS Elastic Beanstalk'],
-  ['Azure Functions v4', 'AWS Lambda'],
-  ['Azure Functions', 'AWS Lambda'],
-  ['Azure API Management (APIM)', 'AWS API Gateway'],
-  ['Azure API Management', 'AWS API Gateway'],
-  ['Azure API Gateway (v2)', 'AWS API Gateway'],
-  ['Azure API Gateway', 'AWS API Gateway'],
-  ['Azure Blob Storage', 'Amazon S3'],
-  ['Azure SQL Database', 'Amazon RDS'],
-  ['Azure SQL', 'Amazon RDS'],
-  ['Azure AD B2C', 'AWS Cognito'],
-  ['Azure AD', 'AWS IAM'],
-  ['Azure Monitor', 'Amazon CloudWatch'],
-  ['Application Insights', 'AWS CloudWatch Insights'],
-  ['Azure Key Vault', 'AWS Secrets Manager'],
-  ['Azure DevOps CI/CD pipelines', 'AWS CodePipeline CI/CD pipelines'],
-  ['Azure DevOps CI/CD', 'AWS CodePipeline'],
-  ['Azure DevOps', 'AWS CodePipeline'],
-  ['Azure Repos', 'AWS CodeCommit'],
-  ['Microsoft Azure', 'Amazon Web Services (AWS)'],
-  ['Azure services', 'AWS services'],
-];
-
-const AZURE_TO_GCP = [
-  ['Azure App Services', 'Google Cloud Run'],
-  ['Azure Functions v4', 'Google Cloud Functions'],
-  ['Azure Functions', 'Google Cloud Functions'],
-  ['Azure API Management (APIM)', 'Google Cloud Apigee'],
-  ['Azure API Management', 'Google Cloud Apigee'],
-  ['Azure API Gateway', 'Google Cloud Endpoints'],
-  ['Azure Blob Storage', 'Google Cloud Storage'],
-  ['Azure SQL Database', 'Google Cloud SQL'],
-  ['Azure SQL', 'Google Cloud SQL'],
-  ['Azure AD B2C', 'Google Identity Platform'],
-  ['Azure AD', 'Google Cloud IAM'],
-  ['Azure Monitor', 'Google Cloud Monitoring'],
-  ['Application Insights', 'Google Cloud Trace'],
-  ['Azure Key Vault', 'Google Secret Manager'],
-  ['Azure DevOps CI/CD pipelines', 'Google Cloud Build CI/CD pipelines'],
-  ['Azure DevOps CI/CD', 'Google Cloud Build'],
-  ['Azure DevOps', 'Google Cloud Build'],
-  ['Azure Repos', 'Google Cloud Source Repositories'],
-  ['Microsoft Azure', 'Google Cloud Platform (GCP)'],
-  ['Azure services', 'GCP services'],
-];
-
-const ANGULAR_TO_REACT = [
-  ['Angular 14 to Angular 18', 'React 17 to React 18'],
-  ['Angular 14–18', 'React 17–18'],
-  ['Angular 14, progressively upgrading to Angular 18', 'React 17, progressively upgrading to React 18'],
-  ['Angular 12 to Angular 15', 'React 16 to React 18'],
-  ['Angular 14', 'React 18'], ['Angular 15', 'React 18'], ['Angular 18', 'React 18'],
-  ['Angular 12', 'React 17'], ['Angular 6', 'React 16'], ['Angular', 'React'],
-  ['RxJS 7 to 8', 'Redux Toolkit'], ['RxJS 7–8', 'Redux Toolkit'], ['RxJS', 'Redux Toolkit'],
-  ['Karma', 'Jest'], ['Jasmine', 'React Testing Library'], ['Protractor', 'Cypress'],
-];
-
-const ANGULAR_TO_VUE = [
-  ['Angular 14 to Angular 18', 'Vue 2 to Vue 3'], ['Angular 14', 'Vue 3'],
-  ['Angular 18', 'Vue 3'], ['Angular 12', 'Vue 2'], ['Angular', 'Vue.js'],
-  ['RxJS', 'Vuex / Pinia'], ['Karma', 'Vitest'], ['Jasmine', 'Vue Test Utils'], ['Protractor', 'Cypress'],
-];
 
 // ── Apply all instructions to DOCX ───────────────────────────────────────────
 function applyToDocx(docxBuffer, instructions, resumeText) {
   const zip = new AdmZip(docxBuffer);
   const docEntry = zip.getEntry('word/document.xml');
-  if (!docEntry) throw new Error('Invalid DOCX — word/document.xml not found');
+  if (!docEntry) throw new Error('Invalid DOCX');
 
   let xml = docEntry.getData().toString('utf-8');
-  const paras = extractParagraphs(xml);
 
-  // Detect scope (recent 2 jobs only for swaps)
+  // Find scope end (3rd job onwards — don't change old roles)
   let scopeEndText = null;
-  const jobKeywords = ['Fannie Mae', 'Lulu Lemon', 'LuluLemon', 'Infosys', 'previous employer'];
-  for (const kw of jobKeywords) {
+  const oldJobKeywords = ['Fannie Mae', 'LuluLemon', 'Lulu Lemon', 'Infosys', 'Wipro', 'TCS', 'Cognizant', 'Accenture', 'Capgemini'];
+  for (const kw of oldJobKeywords) {
     if (resumeText.includes(kw)) { scopeEndText = kw; break; }
-  }
-
-  // HARDCODED STACK SWAPS based on JD detection
-  // These always apply correctly regardless of what Claude returns
-  const stack = instructions.stackDetected || {};
-  let hardcodedSwaps = [];
-  if (stack.cloud === 'aws') hardcodedSwaps = [...hardcodedSwaps, ...AZURE_TO_AWS];
-  if (stack.cloud === 'gcp') hardcodedSwaps = [...hardcodedSwaps, ...AZURE_TO_GCP];
-  if (stack.frontend === 'react') hardcodedSwaps = [...hardcodedSwaps, ...ANGULAR_TO_REACT];
-  if (stack.frontend === 'vue') hardcodedSwaps = [...hardcodedSwaps, ...ANGULAR_TO_VUE];
-
-  // Sort by length desc — longer phrases first
-  hardcodedSwaps.sort((a, b) => b[0].length - a[0].length);
-
-  const hardcodedApplied = [];
-  if (hardcodedSwaps.length > 0) {
-    const scopeEnd = scopeEndText ? xml.indexOf(scopeEndText) : -1;
-    const before = scopeEnd > 0 ? xml.slice(0, xml.indexOf(xml.match(/Client:|Company:/)?.[0] || 'Professional Experience') || 0) : '';
-
-    if (scopeEnd > 0) {
-      // Find start of experience section
-      const expStart = Math.max(xml.indexOf('Professional Experience'), xml.indexOf('County of San Bernardino'), xml.indexOf('Client:'));
-      if (expStart > 0) {
-        const beforeExp = xml.slice(0, expStart);
-        let scope = xml.slice(expStart, scopeEnd);
-        const after = xml.slice(scopeEnd);
-        for (const [from, to] of hardcodedSwaps) {
-          if (scope.includes(from)) {
-            scope = scope.split(from).join(to);
-            hardcodedApplied.push(`${from.slice(0,30)} → ${to.slice(0,30)}`);
-          }
-        }
-        xml = beforeExp + scope + after;
-      }
-    } else {
-      // Apply to full document
-      for (const [from, to] of hardcodedSwaps) {
-        if (xml.includes(from)) {
-          xml = xml.split(from).join(to);
-          hardcodedApplied.push(`${from.slice(0,30)} → ${to.slice(0,30)}`);
-        }
-      }
-    }
-    if (hardcodedApplied.length > 0) console.log(`Hardcoded swaps: ${hardcodedApplied.length}`);
   }
 
   const swapsApplied = [];
   const removedBullets = [];
   const addedBullets = [];
 
-  // SWAPS — apply in recent 2 jobs scope
-  for (const swap of (instructions.swaps || [])) {
+  // SWAPS — sorted by length desc so longer phrases replace first
+  const swaps = [...(instructions.swaps || [])];
+  swaps.sort((a, b) => (b.find?.length || 0) - (a.find?.length || 0));
+
+  for (const swap of swaps) {
     if (!swap.find || !swap.replace) continue;
     if (swap.find.trim() === swap.replace.trim()) continue;
 
-    if (scopeEndText && swap.scope === 'recent_only') {
-      // Only swap before the 3rd job
-      const scopeEndIdx = xml.indexOf(scopeEndText);
-      if (scopeEndIdx > 0) {
-        const before = xml.slice(0, scopeEndIdx);
+    const isRecentOnly = swap.scope === 'recent_only';
+    const scopeEndIdx = scopeEndText ? xml.indexOf(scopeEndText) : -1;
+
+    if (isRecentOnly && scopeEndIdx > 0) {
+      // Find start of experience section
+      const expKeywords = ['Professional Experience', 'County of San Bernardino', 'Client:', 'Work Experience'];
+      let expStart = -1;
+      for (const kw of expKeywords) {
+        const idx = xml.indexOf(kw);
+        if (idx > 0) { expStart = idx; break; }
+      }
+      if (expStart > 0) {
+        const beforeExp = xml.slice(0, expStart);
+        let scope = xml.slice(expStart, scopeEndIdx);
         const after = xml.slice(scopeEndIdx);
-        const newBefore = applyTextSwap(before, swap.find.trim(), swap.replace.trim());
-        if (newBefore !== before) {
-          xml = newBefore + after;
+        const newScope = applyTextSwap(scope, swap.find.trim(), swap.replace.trim());
+        if (newScope !== scope) {
+          xml = beforeExp + newScope + after;
           swapsApplied.push(`${swap.find.trim().slice(0, 35)} → ${swap.replace.trim().slice(0, 35)}`);
         }
       }
     } else {
+      // full_document scope — applies to summary, skills, environment too
       const newXml = applyTextSwap(xml, swap.find.trim(), swap.replace.trim());
       if (newXml !== xml) {
         xml = newXml;
@@ -477,49 +445,24 @@ function applyToDocx(docxBuffer, instructions, resumeText) {
     }
   }
 
-  // ADDITIONS — insert new bullets
-  const currentParas = extractParagraphs(xml);
+  // ADDITIONS
+  let currentParas = extractParagraphs(xml);
   for (const addition of (instructions.add || [])) {
     if (!addition.text || !addition.insertAfter) continue;
-
-    // Find the template paragraph to copy style from
     const afterSnippet = addition.insertAfter.trim().slice(0, 50);
-    let templatePara = null;
-    for (const para of currentParas) {
-      if (para.text.includes(afterSnippet)) {
-        templatePara = para;
-        break;
-      }
-    }
-
-    if (!templatePara) {
-      console.log(`Could not find insertAfter: "${afterSnippet}"`);
-      continue;
-    }
-
-    // Strip any markdown bold formatting Claude may have included
-    const cleanText = addition.text.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1');
-    const newBulletXml = buildBulletPara(cleanText, addition.techTerms || [], templatePara.xml);
-    const newXml = insertAfterParagraph(xml, afterSnippet, newBulletXml);
+    const templatePara = currentParas.find(p => p.text.includes(afterSnippet));
+    if (!templatePara) { console.log(`insertAfter not found: "${afterSnippet}"`); continue; }
+    const newBulletXml = buildBulletPara(addition.text, addition.techTerms || [], templatePara.xml);
+    const newXml = insertAfterParagraph(xml, afterSnippet, newBulletXml, currentParas);
     if (newXml !== xml) {
       xml = newXml;
       addedBullets.push(addition.text.slice(0, 60));
-      // Re-extract paragraphs after each insertion so indices are accurate
-      currentParas.length = 0;
-      currentParas.push(...extractParagraphs(xml));
-    } else {
-      console.log(`insertAfterParagraph failed for: "${afterSnippet}"`);
+      currentParas = extractParagraphs(xml);
     }
   }
 
   zip.updateFile('word/document.xml', Buffer.from(xml, 'utf-8'));
-
-  return {
-    buffer: zip.toBuffer(),
-    swapsApplied: [...hardcodedApplied, ...swapsApplied],
-    removedBullets,
-    addedBullets
-  };
+  return { buffer: zip.toBuffer(), swapsApplied, removedBullets, addedBullets };
 }
 
 // ══ AUTH ══════════════════════════════════════════════════════════════════════
@@ -569,15 +512,10 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
 
     const ext = path.extname(req.file.originalname).toLowerCase();
     const resumeText = await extractText(req.file.buffer, req.file.originalname);
-
-    // Step 1: Claude analyzes and returns editing plan
     const instructions = await analyzeWithClaude(resumeText, jobDescription.trim());
 
-    // Step 2: Apply to DOCX using pure Node.js
     let docxBase64 = null;
-    let swapsApplied = [];
-    let removedBullets = [];
-    let addedBullets = [];
+    let swapsApplied = [], removedBullets = [], addedBullets = [];
 
     if (ext === '.docx') {
       try {
@@ -587,14 +525,12 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
         removedBullets = result.removedBullets;
         addedBullets = result.addedBullets;
         console.log(`Applied: ${swapsApplied.length} swaps, ${removedBullets.length} removed, ${addedBullets.length} added`);
-      } catch (err) {
-        console.error('DOCX apply error:', err.message);
-      }
+      } catch (err) { console.error('DOCX error:', err.message); }
     }
 
     const changes = [
       ...swapsApplied.map(s => ({ type: 'modified', description: `Updated: ${s}` })),
-      ...removedBullets.map(r => ({ type: 'removed', description: `Removed weak point: ${r}` })),
+      ...removedBullets.map(r => ({ type: 'removed', description: `Removed: ${r}` })),
       ...addedBullets.map(a => ({ type: 'added', description: `Added: ${a}` })),
     ];
     if (changes.length === 0) changes.push({ type: 'added', description: instructions.summary || 'Resume analyzed and optimized' });
@@ -623,7 +559,10 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
       swapsApplied,
       removedCount: removedBullets.length,
       addedCount: addedBullets.length,
-      jdStack: instructions.stackDetected || {},
+      jdStack: {
+        roleType: instructions.roleType || '',
+        mismatches: (instructions.techMismatches || []).map(m => `${m.resumeHas} → ${m.jdWants} (${m.category})`)
+      },
       summary: instructions.summary || ''
     });
 
