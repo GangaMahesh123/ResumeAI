@@ -169,7 +169,8 @@ STRICT RULES:
 6. Remove ONLY unnecessary, repeated, weak, or non-JD-relevant points
 7. Do NOT reduce strength of existing full-stack, cloud, frontend, backend, database, AI, or domain experience
 8. Any new technology added must be checked against project timeline — if not available during that period, use valid alternative
-9. Update ONLY these sections: Professional Summary, Technical Skills, Recent 2 Projects, Environment lines
+9. Update ONLY these sections: Professional Summary, Technical Skills, Recent 2 Projects (latest 2 clients only), Environment lines of latest 2 clients only
+   NEVER touch older client projects — they must remain exactly as in the original resume
 10. Missing JD points inserted naturally into existing bullets or added as new bullets in right position
 11. Maintain same writing style, bullet format, and resume tone
 12. Final resume match must be 92-95% — not overstuffed beyond that
@@ -467,54 +468,136 @@ function applyToDocx(docxBuffer, instructions, resumeText) {
     if (swap.find.trim() === swap.replace.trim()) continue;
 
     const isRecentOnly = swap.scope === 'recent_only';
-    const scopeEndIdx = scopeEndText ? xml.indexOf(scopeEndText) : -1;
 
-    if (isRecentOnly && scopeEndIdx > 0) {
-      // Find start of experience section
-      const expKeywords = ['Professional Experience', 'County of San Bernardino', 'Client:', 'Work Experience'];
-      let expStart = -1;
-      for (const kw of expKeywords) {
-        const idx = xml.indexOf(kw);
-        if (idx > 0) { expStart = idx; break; }
-      }
-      if (expStart > 0) {
-        const beforeExp = xml.slice(0, expStart);
-        let scope = xml.slice(expStart, scopeEndIdx);
-        const after = xml.slice(scopeEndIdx);
-        const newScope = applyTextSwap(scope, swap.find.trim(), swap.replace.trim());
-        if (newScope !== scope) {
-          xml = beforeExp + newScope + after;
-          swapsApplied.push(`${swap.find.trim().slice(0, 35)} → ${swap.replace.trim().slice(0, 35)}`);
+    // Find older projects boundary — never touch beyond this
+    const olderBoundary = (() => {
+      const oldMarkers = ['Fannie Mae', 'LuluLemon', 'Lulu Lemon', 'Infosys', 'Wipro', 'TCS',
+        'Cognizant', 'Accenture', 'Capgemini', 'Apple', 'Citigroup', 'LAHD',
+        'Apollo', 'previous employer'];
+      for (const m of oldMarkers) {
+        if (resumeText.includes(m)) {
+          const idx = xml.indexOf(m);
+          if (idx > 0) return idx;
         }
       }
+      return xml.length;
+    })();
+
+    if (isRecentOnly) {
+      // Only swap before older projects boundary
+      const before = xml.slice(0, olderBoundary);
+      const older = xml.slice(olderBoundary);
+      const newBefore = applyTextSwap(before, swap.find.trim(), swap.replace.trim());
+      if (newBefore !== before) {
+        xml = newBefore + older;
+        swapsApplied.push(`${swap.find.trim().slice(0, 35)} → ${swap.replace.trim().slice(0, 35)}`);
+      }
     } else {
-      // full_document scope — applies to summary, skills, environment too
-      const newXml = applyTextSwap(xml, swap.find.trim(), swap.replace.trim());
-      if (newXml !== xml) {
-        xml = newXml;
+      // full_document — applies to summary + skills + recent projects only (not older)
+      const before = xml.slice(0, olderBoundary);
+      const older = xml.slice(olderBoundary);
+      const newBefore = applyTextSwap(before, swap.find.trim(), swap.replace.trim());
+      if (newBefore !== before) {
+        xml = newBefore + older;
         swapsApplied.push(`${swap.find.trim().slice(0, 35)} → ${swap.replace.trim().slice(0, 35)}`);
       }
     }
   }
 
-  // GUARANTEED TECH STACK SWAPS — run after Claude swaps to catch anything missed
-  // These are applied at paragraph level so they always work regardless of XML run splitting
+  // GUARANTEED TECH STACK SWAPS — only in recent 2 projects, summary, and skills
+  // Never touch older clients
   const guaranteedSwaps = buildGuaranteedSwaps(instructions.stackDetected || {}, resumeText);
-  for (const [from, to] of guaranteedSwaps) {
-    const newXml = applyTextSwap(xml, from, to);
-    if (newXml !== xml) {
-      xml = newXml;
-      swapsApplied.push(`Guaranteed: ${from.slice(0, 30)} → ${to.slice(0, 30)}`);
+  if (guaranteedSwaps.length > 0) {
+    // Find boundaries: recent 2 projects start and 3rd (older) project start
+    const recentProjectsStart = (() => {
+      const markers = ['Professional Experience', 'County of San Bernardino', 'Client:'];
+      for (const m of markers) {
+        const idx = xml.indexOf(m);
+        if (idx > 0) return idx;
+      }
+      return 0;
+    })();
+
+    const olderProjectsStart = (() => {
+      // Find 3rd client/project marker
+      const oldMarkers = ['Fannie Mae', 'LuluLemon', 'Lulu Lemon', 'Infosys', 'Wipro', 'TCS',
+        'Cognizant', 'Accenture', 'Capgemini', 'Apple', 'Citigroup', 'LAHD',
+        'Apollo', 'previous employer'];
+      for (const m of oldMarkers) {
+        if (resumeText.includes(m)) {
+          const idx = xml.indexOf(m);
+          if (idx > 0) return idx;
+        }
+      }
+      return xml.length; // No older projects found — apply to all
+    })();
+
+    // Split XML into: before recent projects | recent 2 projects | older projects
+    const beforeRecent = xml.slice(0, recentProjectsStart);
+    let recentScope = xml.slice(recentProjectsStart, olderProjectsStart);
+    const olderScope = xml.slice(olderProjectsStart);
+
+    // Apply guaranteed swaps ONLY in recent scope
+    for (const [from, to] of guaranteedSwaps) {
+      if (recentScope.includes(from)) {
+        recentScope = recentScope.split(from).join(to);
+        swapsApplied.push(`Guaranteed: ${from.slice(0, 30)} → ${to.slice(0, 30)}`);
+      } else {
+        // Try paragraph-level swap within recent scope only
+        const paras = extractParagraphs(recentScope);
+        for (const para of paras) {
+          if (para.text.includes(from)) {
+            const newText = para.text.split(from).join(to);
+            const pPrM = para.xml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
+            const rPrM = para.xml.match(/<w:rPr>[\s\S]*?<\/w:rPr>/);
+            const pPr = pPrM ? pPrM[0] : '';
+            const rPr = rPrM ? rPrM[0].replace(/<w:b\/>/g,'').replace(/<w:bCs\/>/g,'') : '<w:rPr><w:sz w:val="20"/></w:rPr>';
+            const escaped = newText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            recentScope = recentScope.slice(0, para.index) +
+              `<w:p>${pPr}<w:r>${rPr}<w:t xml:space="preserve">${escaped}</w:t></w:r></w:p>` +
+              recentScope.slice(para.index + para.xml.length);
+            swapsApplied.push(`Guaranteed: ${from.slice(0, 30)} → ${to.slice(0, 30)}`);
+            break;
+          }
+        }
+      }
     }
+
+    // Also apply summary/skills swaps to the before-recent section (summary + skills)
+    let beforeRecentUpdated = beforeRecent;
+    for (const [from, to] of guaranteedSwaps) {
+      if (beforeRecentUpdated.includes(from)) {
+        beforeRecentUpdated = beforeRecentUpdated.split(from).join(to);
+      }
+    }
+
+    xml = beforeRecentUpdated + recentScope + olderScope; // Older scope NEVER touched
   }
 
-  // REMOVALS
+  // REMOVALS — only from recent 2 projects, never older clients
+  const removalBoundary = (() => {
+    const oldMarkers = ['Fannie Mae', 'LuluLemon', 'Lulu Lemon', 'Infosys', 'Wipro', 'TCS',
+      'Cognizant', 'Accenture', 'Capgemini', 'Apple', 'Citigroup', 'LAHD',
+      'Apollo', 'previous employer'];
+    for (const m of oldMarkers) {
+      if (resumeText.includes(m)) {
+        const idx = xml.indexOf(m);
+        if (idx > 0) return idx;
+      }
+    }
+    return xml.length;
+  })();
+
   for (const removal of (instructions.remove || [])) {
     if (!removal.find) continue;
-    const newXml = removeParagraph(xml, removal.find.trim());
+    const snippet = removal.find.trim().slice(0, 50);
+    // Only remove if the bullet is in recent 2 projects (before older boundary)
+    const snippetIdx = xml.indexOf(snippet);
+    if (snippetIdx === -1 || snippetIdx > removalBoundary) continue;
+    const newXml = removeParagraph(xml, snippet);
     if (newXml !== xml) {
       xml = newXml;
-      removedBullets.push(removal.find.trim().slice(0, 50));
+      removedBullets.push(snippet);
     }
   }
 
