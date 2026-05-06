@@ -151,161 +151,78 @@ function insertAfterParagraph(xml, afterText, newParaXml, currentParas) {
   return xml;
 }
 
-// ── CLAUDE: Full intelligent analysis ────────────────────────────────────────
+// ── STEP 1: Claude analyzes JD and resume ────────────────────────────────────
+// Claude's ONLY job: identify missing keywords and weak points
+// Claude does NOT decide what to swap — the code handles swaps
 async function analyzeWithClaude(resumeText, jdText) {
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 4000,
-    system: `You are a Resume Tailoring and JD Match Optimization Assistant.
+    system: `You are a Resume Tailoring Assistant. Analyze a resume against a job description.
 
-GOAL: For any uploaded JD and resume, tailor the resume to achieve 92-95% ATS match while keeping it truthful, ATS-friendly, and professionally written.
+YOUR ONLY JOBS:
+1. Identify JD keywords/skills that are MISSING from the resume — these need to be ADDED
+2. Identify bullets that are WEAK, REPEATED, or IRRELEVANT to THIS specific JD — these can be REMOVED
+3. Suggest what to add and where to add it in the recent 2 projects
 
-STRICT RULES:
-1. Do NOT remove or change any core project responsibilities, domain experience, or real technologies already present
-2. Do NOT invent fake experience, fake employers, fake project work, or technologies not connected to candidate's background
-3. Keep existing resume structure and technology order: Summary → Technical Skills → Professional Experience → Recent 2 Projects → Environment
-4. Add missing JD-related skills only in the correct section and correct position
-5. Preserve existing ordering of technologies: frontend, backend, database, cloud, DevOps, testing, security, AI, domain-specific tools
-6. Remove ONLY unnecessary, repeated, weak, or non-JD-relevant points
-7. Do NOT reduce strength of existing full-stack, cloud, frontend, backend, database, AI, or domain experience
-8. Any new technology added must be checked against project timeline — if not available during that period, use valid alternative
-9. Update ONLY these sections: Professional Summary, Technical Skills, Recent 2 Projects (latest 2 clients only), Environment lines of latest 2 clients only
-   NEVER touch older client projects — they must remain exactly as in the original resume
-10. Missing JD points inserted naturally into existing bullets or added as new bullets in right position
-11. Maintain same writing style, bullet format, and resume tone
-12. Final resume match must be 92-96% — not overstuffed beyond that
-13. CRITICAL — DO NOT SWAP IF NOT NEEDED: If the JD does not mention a different cloud (e.g. JD says nothing about AWS), do NOT swap Azure to AWS. If JD mentions Angular, do NOT swap Angular to React. Only swap when there is a CLEAR mismatch between what the resume has and what the JD explicitly requires.
-14. NEVER reduce years of experience — if resume says 12+ years, keep 12+ years
-15. NEVER swap a technology when the JD already accepts or requires that technology (e.g. JD wants Angular → keep Angular, do not swap to React)
-16. If JD has no cloud requirement — keep existing cloud stack as is, do not add AWS or GCP
+YOU DO NOT handle technology swaps. The system handles swaps automatically.
+DO NOT suggest swapping Azure to AWS, Angular to React, or any cloud/framework swaps.
+DO NOT generate any "swaps" array entries for cloud providers or frontend frameworks.
+Only generate swaps for minor phrasing improvements within the same technology.
 
-PROCESS:
-STEP 1 — ANALYZE JD:
-Extract: required skills, preferred skills, role type (full_stack/backend/frontend/devops/data_engineer/ml_engineer), and role pattern (greenfield/migration/maintenance/modernization).
-For MIGRATION PATTERN jobs: keep legacy tech to show FROM state, frame bullets as migration narratives showing journey from old to new tech., preferred skills, domain needs, tools, cloud, frontend, backend, database, DevOps, testing, security requirements.
+RULES FOR ADDITIONS:
+- Only add skills that are explicitly required by the JD AND missing from resume
+- New bullets must match the candidate's writing style and seniority
+- Only add to the 2 most recent jobs (not older clients)
+- insertAfter must be first 60 chars of an EXISTING experience bullet copied exactly
+- No markdown bold in text — use techTerms array
+- Additions must be realistic and defensible in interviews
 
-STEP 2 — COMPARE JD vs RESUME:
-Identify:
-- Already matching skills (keep as is)
-- Missing skills (add in right section/position)
-- Partially covered skills (enhance existing bullet)
-- Skills that CANNOT be added (not supported by candidate background)
-- Timeline/version conflicts (flag and suggest valid alternative)
+RULES FOR REMOVALS:
+- Only remove if bullet is COMPLETELY irrelevant to this JD's domain/role
+- Only remove weak/repeated/obvious statements
+- NEVER remove core technical achievements
+- NEVER remove primary tech stack bullets
+- Only remove from recent 2 projects, never older clients
 
-STEP 3 — GENERATE CHANGES:
-Generate ONLY the exact additions, replacements, and removals needed for 92-95% match.
+VERSION RULES:
+- Any version added must match the project date range
+- Never use a version released after the project end date
 
-STEP 4 — TECHNOLOGY SWAPS (VERY STRICT RULES):
-BEFORE generating ANY swap, ask yourself: "Does the JD EXPLICITLY name this target technology?"
-If NO → DO NOT generate that swap. Leave the resume technology as is.
-
-SWAP ONLY WHEN:
-- JD explicitly names "AWS" or "Amazon" → then swap Azure to AWS
-- JD explicitly names "React" or "React.js" (and NOT Angular) → then swap Angular to React  
-- JD explicitly names "GCP" or "Google Cloud" → then swap Azure to GCP
-- JD explicitly names "Angular" (and resume has React) → then swap React to Angular
-- JD explicitly names a different database (e.g. PostgreSQL only, not SQL Server) → then swap
-- JD explicitly names a different CI/CD tool that conflicts with resume → then swap
-
-DO NOT SWAP WHEN:
-- JD mentions .NET, C#, ASP.NET Core → these already match, no swap needed
-- JD does not mention cloud at all → keep Azure as is
-- JD does not mention frontend framework → keep Angular as is
-- JD mentions Blazor → Blazor is already in resume, no swap needed
-- JD mentions RabbitMQ → RabbitMQ is already in resume (Kafka stays too, both are valid)
-- JD mentions MongoDB → add it if missing, but do NOT remove SQL Server
-- The technology is already present in the resume AND acceptable for the JD
-
-Generate swaps ONLY for genuine mismatches where JD explicitly requires a DIFFERENT technology.
-Scope: experience/environment = "recent_only", summary/skills = "full_document"
-
-STEP 5 — VERSION VALIDATION:
-For every technology version added or swapped:
-1. Extract project date range (e.g. "Aug 2023 - Present", "Jan 2021 - Aug 2023")
-2. Verify version was released BEFORE project end date
-3. For migration projects: FROM version must predate project start, TO version must exist by project end
-4. NEVER downgrade existing versions
-5. If version conflict found: flag it and use latest valid version for that period
-
-VERSION RELEASE TIMELINE:
-React: 16(2017), 17(Oct 2020), 18(Mar 2022), 19(Dec 2024)
-Angular: 12(May 2021), 13(Nov 2021), 14(Jun 2022), 15(Nov 2022), 16(May 2023), 17(Nov 2023), 18(May 2024)
-.NET: 5(Nov 2020), 6(Nov 2021), 7(Nov 2022), 8(Nov 2023), 9(Nov 2024)
-Java: 11(Sep 2018), 17(Sep 2021), 21(Sep 2023)
-Python: 3.9(Oct 2020), 3.10(Oct 2021), 3.11(Oct 2022), 3.12(Oct 2023)
-Node: 16(Apr 2021), 18(Apr 2022), 20(Apr 2023), 22(Apr 2024)
-Kubernetes: 1.24(May 2022), 1.27(Apr 2023), 1.28(Aug 2023), 1.30(Apr 2024)
-PostgreSQL: 14(Sep 2021), 15(Oct 2022), 16(Sep 2023)
-MongoDB: 5(Jul 2021), 6(Jul 2022), 7(Aug 2023)
-TypeScript: 4.x(2020-2022), 5.0(Mar 2023), 5.3(Nov 2023), 5.6(Sep 2024)
-Spring Boot: 3.0(Nov 2022), 3.1(May 2023), 3.2(Nov 2023), 3.3(May 2024)
-TensorFlow: 2.10(Sep 2022), 2.12(Mar 2023), 2.15(Nov 2023)
-PyTorch: 2.0(Mar 2023), 2.1(Oct 2023), 2.3(Apr 2024)
-Spark: 3.3(Jun 2022), 3.4(Apr 2023), 3.5(Sep 2023)
-Airflow: 2.5(Dec 2022), 2.7(Aug 2023), 2.9(Apr 2024)
-MLflow: 2.0(Oct 2022), 2.5(Jun 2023), 2.9(Dec 2023)
-LangChain: 0.1(Jan 2024), 0.2(May 2024)
-dbt: 1.5(Apr 2023), 1.7(Nov 2023), 1.8(May 2024)
-
-ABSOLUTE RULES:
-- find/replace text: must exist VERBATIM in resume
-- insertAfter: COPY FIRST 60 CHARS EXACTLY from existing experience bullet (NOT summary)
-- No markdown bold (**text**) in bullet text — use techTerms array
-- Additions roughly balance removals (preserve page count)
-- All additions must be realistic and defensible in interviews
-- NEVER generate a swap where find is just "Azure" or "AWS" or "GCP" as a single word — this creates nonsense like "Microsoft AWS". Always use the FULL specific phrase that exists in the resume.
-- NEVER generate cloud swaps unless the JD explicitly names a DIFFERENT cloud than what is in the resume
-- Return ONLY valid JSON`,
+Return ONLY valid JSON.`,
 
     messages: [{
       role: 'user',
-      content: `Analyze this resume against the JD and produce a complete tailoring plan.
+      content: `Analyze this resume vs JD. Return additions and removals only.
 
 RESUME:
-\${resumeText.slice(0, 6000)}
+${resumeText.slice(0, 6000)}
 
 JOB DESCRIPTION:
-\${jdText.slice(0, 2000)}
+${jdText.slice(0, 2000)}
 
-Return ONLY this JSON (no markdown):
+Return ONLY this JSON:
 {
-  "matchScoreBefore": <integer — current ATS score>,
+  "matchScoreBefore": <integer>,
   "matchScoreAfter": <integer 92-95>,
-  "roleType": "full_stack|backend|frontend|devops|data_engineer|data_scientist|ml_engineer|mlops|ai_engineer|other",
-  "techMismatches": [
-    { "resumeHas": "exact term", "jdWants": "exact term", "category": "cloud|frontend|backend|database|orm|messaging|testing|cicd|auth|monitoring|containers|iac|ml|other" }
-  ],
-  "timelineIssues": [
-    { "technology": "name", "version": "version", "project": "project name", "issue": "description", "suggestion": "valid alternative" }
-  ],
-  "swaps": [
-    {
-      "find": "exact verbatim text from resume — must exist",
-      "replace": "replacement text with JD technology",
-      "scope": "recent_only|full_document",
-      "section": "experience|environment|skills|summary",
-      "reason": "brief reason"
-    }
-  ],
+  "roleType": "full_stack|backend|frontend|devops|data_engineer|ml_engineer|other",
+  "missingKeywords": ["keyword1", "keyword2"],
   "remove": [
     {
-      "find": "first 60 chars of bullet copied EXACTLY from resume",
-      "reason": "specific reason why irrelevant/weak for THIS JD"
+      "find": "first 60 chars of bullet EXACTLY from resume",
+      "reason": "why irrelevant to THIS JD"
     }
   ],
   "add": [
     {
-      "text": "complete new bullet plain text matching candidate writing style",
-      "insertAfter": "first 60 chars of existing EXPERIENCE bullet copied EXACTLY from resume",
-      "techTerms": ["ExactTerm1", "ExactTerm2"],
-      "reason": "which JD keyword/skill this covers"
+      "text": "new bullet text matching candidate style",
+      "insertAfter": "first 60 chars of existing experience bullet EXACTLY from resume",
+      "techTerms": ["Term1", "Term2"],
+      "reason": "which JD keyword this covers"
     }
   ],
-  "summaryUpdate": "updated professional summary text aligned with JD (full text)",
-  "skillsUpdates": [
-    { "find": "exact text in skills section", "replace": "updated text with JD technology" }
-  ],
-  "summary": "Score X% before. Key changes: [list]. Score Y% after."
+  "summaryKeywords": ["keyword1", "keyword2"],
+  "summary": "brief description of changes"
 }`
     }]
   });
@@ -313,47 +230,36 @@ Return ONLY this JSON (no markdown):
   const raw = message.content.map(b => b.type === 'text' ? b.text : '').join('').trim();
   try {
     const cleaned = raw.replace(/```json\n?|```\n?/g, '').trim();
-    const firstBrace = cleaned.indexOf('{');
-    const lastBrace = cleaned.lastIndexOf('}');
-    const parsed = JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
-    console.log(`Plan: ${parsed.swaps?.length||0} swaps, ${parsed.remove?.length||0} removals, ${parsed.add?.length||0} additions`);
-    console.log(`Role: ${parsed.roleType}, Mismatches: ${parsed.techMismatches?.length||0}`);
-
-    // Build stackDetected from techMismatches for guaranteed swaps
-    const mismatches = parsed.techMismatches || [];
-    parsed.stackDetected = {
-      cloud: mismatches.find(m => m.category === 'cloud')?.jdWants?.toLowerCase().includes('aws') ? 'aws'
-           : mismatches.find(m => m.category === 'cloud')?.jdWants?.toLowerCase().includes('gcp') ? 'gcp'
-           : mismatches.find(m => m.category === 'cloud')?.jdWants?.toLowerCase().includes('azure') ? 'azure'
-           : parsed.stackDetected?.cloud || 'none',
-      frontend: mismatches.find(m => m.category === 'frontend')?.jdWants?.toLowerCase().includes('react') ? 'react'
-              : mismatches.find(m => m.category === 'frontend')?.jdWants?.toLowerCase().includes('vue') ? 'vue'
-              : mismatches.find(m => m.category === 'frontend')?.jdWants?.toLowerCase().includes('angular') ? 'angular'
-              : parsed.stackDetected?.frontend || 'none',
-    };
-    console.log(`Stack detected: cloud=${parsed.stackDetected.cloud}, frontend=${parsed.stackDetected.frontend}`);
+    const parsed = JSON.parse(cleaned.slice(cleaned.indexOf('{'), cleaned.lastIndexOf('}') + 1));
+    console.log(`Claude: ${parsed.remove?.length||0} removals, ${parsed.add?.length||0} additions, role: ${parsed.roleType}`);
     return parsed;
   } catch (e) {
     console.error('Parse error:', e.message, raw.slice(0, 200));
-    return { swaps: [], remove: [], add: [], matchScoreBefore: 70, matchScoreAfter: 88, techMismatches: [], summary: '' };
+    return { remove: [], add: [], matchScoreBefore: 70, matchScoreAfter: 88, missingKeywords: [], summary: '' };
   }
 }
 
-// ── Build guaranteed swap list — only if JD actually requires the technology ──
-function buildGuaranteedSwaps(stackDetected, resumeText, jdText) {
+// ── STEP 2: Detect tech mismatches from JD vs resume ─────────────────────────
+// This is where ALL swap decisions are made — based purely on JD text vs resume text
+// No AI involved in swap decisions — pure rule-based detection
+function detectSwaps(resumeText, jdText) {
+  const jd = jdText.toLowerCase();
+  const resume = resumeText.toLowerCase();
   const swaps = [];
-  const resumeHas = (term) => resumeText.toLowerCase().includes(term.toLowerCase());
-  const jdWants = (term) => jdText.toLowerCase().includes(term.toLowerCase());
-  const jdWantsAny = (...terms) => terms.some(t => jdText.toLowerCase().includes(t.toLowerCase()));
 
-  // CLOUD SWAPS — only if JD explicitly mentions the target cloud AND does NOT mention existing cloud
-  // If JD says "AWS" or "Amazon" AND does not say "Azure" → swap Azure to AWS
-  if (stackDetected.cloud === 'aws'
-      && jdWantsAny('AWS', 'Amazon Web Services', 'Amazon S3', 'EC2', 'Lambda', 'RDS')
-      && !jdWantsAny('Azure', 'Microsoft Azure')
-      && resumeHas('Azure')) {
-      // Longest phrases first
-      [
+  // Helper: does JD explicitly mention this term?
+  const jdHas = (...terms) => terms.some(t => jd.includes(t.toLowerCase()));
+  // Helper: does resume have this term?
+  const resumeHas = (...terms) => terms.some(t => resume.includes(t.toLowerCase()));
+
+  // ── CLOUD DETECTION ──────────────────────────────────────────────────────
+  // Only swap cloud if JD explicitly requires a DIFFERENT cloud than what resume has
+  // AND JD does NOT mention the resume's current cloud
+
+  if (resumeHas('azure', 'microsoft azure')) {
+    if (jdHas('aws', 'amazon web services', 'ec2', 'lambda', ' s3 ', 'rds') && !jdHas('azure', 'microsoft azure')) {
+      // Resume has Azure, JD wants ONLY AWS → swap
+      swaps.push(...[
         ['Azure API Management (APIM)', 'AWS API Gateway'],
         ['Azure API Management', 'AWS API Gateway'],
         ['Azure API Gateway (v2)', 'AWS API Gateway'],
@@ -362,7 +268,7 @@ function buildGuaranteedSwaps(stackDetected, resumeText, jdText) {
         ['Azure Functions v4', 'AWS Lambda'],
         ['Azure Functions', 'AWS Lambda'],
         ['Azure Blob Storage', 'Amazon S3'],
-        ['Azure SQL Database', 'Amazon RDS PostgreSQL'],
+        ['Azure SQL Database', 'Amazon RDS'],
         ['Azure SQL', 'Amazon RDS'],
         ['Azure AD B2C', 'AWS Cognito'],
         ['Azure AD', 'AWS IAM'],
@@ -375,307 +281,218 @@ function buildGuaranteedSwaps(stackDetected, resumeText, jdText) {
         ['Azure Repos', 'AWS CodeCommit'],
         ['Microsoft Azure', 'Amazon Web Services (AWS)'],
         ['Azure services', 'AWS services'],
-      ].forEach(([f, t]) => swaps.push([f, t]));
+      ]);
+    } else if (jdHas('gcp', 'google cloud', 'vertex ai', 'bigquery', 'cloud run') && !jdHas('azure', 'microsoft azure')) {
+      // Resume has Azure, JD wants ONLY GCP → swap
+      swaps.push(...[
+        ['Azure API Management (APIM)', 'Google Cloud Apigee'],
+        ['Azure API Management', 'Google Cloud Apigee'],
+        ['Azure API Gateway', 'Google Cloud Endpoints'],
+        ['Azure App Services', 'Google Cloud Run'],
+        ['Azure Functions v4', 'Google Cloud Functions'],
+        ['Azure Functions', 'Google Cloud Functions'],
+        ['Azure Blob Storage', 'Google Cloud Storage'],
+        ['Azure SQL Database', 'Google Cloud SQL'],
+        ['Azure SQL', 'Google Cloud SQL'],
+        ['Azure AD B2C', 'Google Identity Platform'],
+        ['Azure AD', 'Google Cloud IAM'],
+        ['Azure Monitor', 'Google Cloud Monitoring'],
+        ['Application Insights', 'Google Cloud Trace'],
+        ['Azure Key Vault', 'Google Secret Manager'],
+        ['Azure DevOps CI/CD pipelines', 'Google Cloud Build CI/CD pipelines'],
+        ['Azure DevOps', 'Google Cloud Build'],
+        ['Azure Repos', 'Google Cloud Source Repositories'],
+        ['Microsoft Azure', 'Google Cloud Platform (GCP)'],
+        ['Azure services', 'GCP services'],
+      ]);
+    }
+    // If JD has Azure OR has no cloud requirement → NO cloud swap
   }
 
-  // GCP swaps — only if JD explicitly mentions GCP and NOT Azure
-  if (stackDetected.cloud === 'gcp'
-      && jdWantsAny('GCP', 'Google Cloud', 'Vertex AI', 'BigQuery', 'Cloud Run')
-      && !jdWantsAny('Azure', 'Microsoft Azure')
-      && resumeHas('Azure')) {
-    [
-      ['Azure API Management (APIM)', 'Google Cloud Apigee'],
-      ['Azure API Management', 'Google Cloud Apigee'],
-      ['Azure API Gateway', 'Google Cloud Endpoints'],
-      ['Azure App Services', 'Google Cloud Run'],
-      ['Azure Functions v4', 'Google Cloud Functions'],
-      ['Azure Functions', 'Google Cloud Functions'],
-      ['Azure Blob Storage', 'Google Cloud Storage'],
-      ['Azure SQL Database', 'Google Cloud SQL'],
-      ['Azure SQL', 'Google Cloud SQL'],
-      ['Azure AD B2C', 'Google Identity Platform'],
-      ['Azure AD', 'Google Cloud IAM'],
-      ['Azure Monitor', 'Google Cloud Monitoring'],
-      ['Application Insights', 'Google Cloud Trace'],
-      ['Azure Key Vault', 'Google Secret Manager'],
-      ['Azure DevOps CI/CD pipelines', 'Google Cloud Build CI/CD pipelines'],
-      ['Azure DevOps', 'Google Cloud Build'],
-      ['Azure Repos', 'Google Cloud Source Repositories'],
-      ['Microsoft Azure', 'Google Cloud Platform (GCP)'],
-    ].forEach(([f, t]) => swaps.push([f, t]));
+  if (resumeHas('amazon web services', ' aws ') && !resumeHas('azure')) {
+    if (jdHas('azure', 'microsoft azure') && !jdHas('aws', 'amazon')) {
+      swaps.push(...[
+        ['AWS Elastic Beanstalk', 'Azure App Services'],
+        ['AWS Lambda', 'Azure Functions'],
+        ['AWS API Gateway', 'Azure API Management'],
+        ['Amazon S3', 'Azure Blob Storage'],
+        ['Amazon RDS', 'Azure SQL Database'],
+        ['AWS Cognito', 'Azure AD B2C'],
+        ['AWS IAM', 'Azure AD'],
+        ['Amazon CloudWatch', 'Azure Monitor'],
+        ['AWS Secrets Manager', 'Azure Key Vault'],
+        ['AWS CodePipeline', 'Azure DevOps'],
+        ['AWS CodeCommit', 'Azure Repos'],
+        ['Amazon Web Services (AWS)', 'Microsoft Azure'],
+      ]);
+    } else if (jdHas('gcp', 'google cloud') && !jdHas('aws', 'amazon')) {
+      swaps.push(...[
+        ['AWS Elastic Beanstalk', 'Google Cloud Run'],
+        ['AWS Lambda', 'Google Cloud Functions'],
+        ['AWS API Gateway', 'Google Cloud Endpoints'],
+        ['Amazon S3', 'Google Cloud Storage'],
+        ['Amazon RDS', 'Google Cloud SQL'],
+        ['AWS Cognito', 'Google Identity Platform'],
+        ['AWS IAM', 'Google Cloud IAM'],
+        ['Amazon CloudWatch', 'Google Cloud Monitoring'],
+        ['AWS CodePipeline', 'Google Cloud Build'],
+        ['Amazon Web Services (AWS)', 'Google Cloud Platform (GCP)'],
+      ]);
+    }
   }
 
-  // FRONTEND SWAPS — only if JD explicitly requires React (not Angular)
-  // If JD mentions Angular, do NOT swap Angular to React
-  if (stackDetected.frontend === 'react'
-      && jdWantsAny('React', 'React.js', 'ReactJS')
-      && !jdWantsAny('Angular')
-      && resumeHas('Angular')) {
-    [
+  if (resumeHas('google cloud', 'gcp')) {
+    if (jdHas('aws', 'amazon web services') && !jdHas('gcp', 'google cloud')) {
+      swaps.push(...[
+        ['Google Cloud Run', 'AWS Elastic Beanstalk'],
+        ['Google Cloud Functions', 'AWS Lambda'],
+        ['Google Cloud Endpoints', 'AWS API Gateway'],
+        ['Google Cloud Storage', 'Amazon S3'],
+        ['Google Cloud SQL', 'Amazon RDS'],
+        ['Google Identity Platform', 'AWS Cognito'],
+        ['Google Cloud IAM', 'AWS IAM'],
+        ['Google Cloud Monitoring', 'Amazon CloudWatch'],
+        ['Google Cloud Build', 'AWS CodePipeline'],
+        ['Google Cloud Platform (GCP)', 'Amazon Web Services (AWS)'],
+        ['GCP services', 'AWS services'],
+      ]);
+    } else if (jdHas('azure', 'microsoft azure') && !jdHas('gcp', 'google cloud')) {
+      swaps.push(...[
+        ['Google Cloud Run', 'Azure App Services'],
+        ['Google Cloud Functions', 'Azure Functions'],
+        ['Google Cloud Storage', 'Azure Blob Storage'],
+        ['Google Cloud SQL', 'Azure SQL Database'],
+        ['Google Identity Platform', 'Azure AD B2C'],
+        ['Google Cloud IAM', 'Azure AD'],
+        ['Google Cloud Monitoring', 'Azure Monitor'],
+        ['Google Cloud Build', 'Azure DevOps'],
+        ['Google Cloud Platform (GCP)', 'Microsoft Azure'],
+      ]);
+    }
+  }
+
+  // ── FRONTEND DETECTION ───────────────────────────────────────────────────
+  // Only swap frontend if JD explicitly requires a DIFFERENT framework
+
+  if (resumeHas('angular') && !resumeHas('react') &&
+      jdHas('react', 'react.js', 'reactjs') && !jdHas('angular')) {
+    swaps.push(...[
       ['Angular 14 to Angular 18', 'React 17 to React 18'],
-      ['Angular 14–18', 'React 17–18'],
+      ['Angular 14\u201318', 'React 17\u201318'],
       ['Angular 14, progressively upgrading to Angular 18', 'React 17, progressively upgrading to React 18'],
-      ['Angular (11–18)', 'React (16–18)'],
       ['Angular 12 to Angular 15', 'React 16 to React 18'],
-      ['Angular 12 to React 18', 'React 16 to React 18'],
+      ['Angular 12\u201315', 'React 16\u201318'],
+      ['Angular (11\u201318)', 'React (16\u201318)'],
       ['Angular 12 front-end', 'React 17 front-end'],
-      ['Angular 12', 'React 17'],
-      ['Angular 14', 'React 18'],
-      ['Angular 15', 'React 18'],
+      ['Angular 19', 'React 19'],
       ['Angular 18', 'React 18'],
+      ['Angular 17', 'React 18'],
+      ['Angular 16', 'React 18'],
+      ['Angular 15', 'React 18'],
+      ['Angular 14', 'React 18'],
+      ['Angular 12', 'React 17'],
       ['Angular 6', 'React 16'],
       ['AngularJS', 'React.js'],
       ['Angular', 'React'],
       ['RxJS 7 to 8', 'Redux Toolkit'],
-      ['RxJS 7–8', 'Redux Toolkit'],
+      ['RxJS 7\u20138', 'Redux Toolkit'],
       ['RxJS', 'Redux Toolkit'],
       ['Karma', 'Jest'],
       ['Jasmine', 'React Testing Library'],
       ['Protractor', 'Cypress'],
-    ].forEach(([f, t]) => swaps.push([f, t]));
+    ]);
   }
 
-  if (stackDetected.frontend === 'vue' && jdWantsAny('Vue', 'Vue.js', 'VueJS') && !jdWantsAny('Angular') && resumeHas('Angular')) {
-    [
+  if (resumeHas('react') && !resumeHas('angular') &&
+      jdHas('angular') && !jdHas('react')) {
+    swaps.push(...[
+      ['React 17 to React 18', 'Angular 14 to Angular 18'],
+      ['React 18', 'Angular 18'],
+      ['React 17', 'Angular 14'],
+      ['React.js', 'Angular'],
+      ['React', 'Angular'],
+      ['Redux Toolkit', 'RxJS'],
+      ['Jest', 'Karma'],
+      ['React Testing Library', 'Jasmine'],
+      ['Cypress', 'Protractor'],
+    ]);
+  }
+
+  if (resumeHas('angular') && jdHas('vue', 'vue.js', 'vuejs') && !jdHas('angular')) {
+    swaps.push(...[
       ['Angular 14 to Angular 18', 'Vue 2 to Vue 3'],
-      ['Angular 14', 'Vue 3'], ['Angular 18', 'Vue 3'],
+      ['Angular 18', 'Vue 3'], ['Angular 14', 'Vue 3'],
       ['Angular 12', 'Vue 2'], ['Angular', 'Vue.js'],
       ['RxJS', 'Vuex / Pinia'], ['Karma', 'Vitest'], ['Jasmine', 'Vue Test Utils'],
-    ].forEach(([f, t]) => swaps.push([f, t]));
+    ]);
   }
 
-  if (stackDetected.frontend === 'angular' && jdWantsAny('Angular') && !jdWantsAny('React') && resumeHas('React')) {
-    [
-      ['React 17 to React 18', 'Angular 14 to Angular 18'],
-      ['React 18', 'Angular 18'], ['React 17', 'Angular 14'],
-      ['React.js', 'Angular'], ['React', 'Angular'],
-      ['Redux Toolkit', 'RxJS'], ['Jest', 'Karma'],
-      ['React Testing Library', 'Jasmine'], ['Cypress', 'Protractor'],
-    ].forEach(([f, t]) => swaps.push([f, t]));
-  }
+  // Sort longest first so specific phrases replace before generic ones
+  swaps.sort((a, b) => b[0].length - a[0].length);
 
+  console.log(`Detected ${swaps.length} swaps from JD analysis`);
   return swaps;
 }
 
-// ── Apply all instructions to DOCX ───────────────────────────────────────────
-function applyToDocx(docxBuffer, instructions, resumeText, jdText) {
+// ── STEP 3: Apply everything to DOCX ─────────────────────────────────────────
+function applyToDocx(docxBuffer, instructions, resumeText, jdText, detectedSwaps) {
   const zip = new AdmZip(docxBuffer);
   const docEntry = zip.getEntry('word/document.xml');
   if (!docEntry) throw new Error('Invalid DOCX');
 
   let xml = docEntry.getData().toString('utf-8');
 
-  // Find scope end (3rd job onwards — don't change old roles)
-  let scopeEndText = null;
-  const oldJobKeywords = ['Fannie Mae', 'LuluLemon', 'Lulu Lemon', 'Infosys', 'Wipro', 'TCS', 'Cognizant', 'Accenture', 'Capgemini'];
-  for (const kw of oldJobKeywords) {
-    if (resumeText.includes(kw)) { scopeEndText = kw; break; }
+  // Find older clients boundary — NEVER touch beyond this
+  const olderClientMarkers = [
+    'Fannie Mae', 'LuluLemon', 'Lulu Lemon', 'Infosys', 'Wipro', 'TCS',
+    'Cognizant', 'Accenture', 'Capgemini', 'Apollo', 'LAHD', 'Citigroup', 'Apple'
+  ];
+  let olderBoundary = xml.length;
+  for (const marker of olderClientMarkers) {
+    if (resumeText.includes(marker)) {
+      const idx = xml.indexOf(marker);
+      if (idx > 0 && idx < olderBoundary) olderBoundary = idx;
+    }
   }
 
   const swapsApplied = [];
   const removedBullets = [];
   const addedBullets = [];
 
-  // SWAPS — validate each swap against JD before applying
-  // REJECT any swap that introduces a technology not mentioned in the JD
-  const jdLower = (jdText || '').toLowerCase();
-
-  // Technologies that should NEVER be swapped unless JD explicitly asks
-  const cloudSwapGuards = [
-    // Cloud swaps — require JD to mention target AND not mention existing
-    { from: 'azure', to: 'aws', jdRequired: ['aws', 'amazon web services', 'ec2', 'lambda', 's3', 'rds'], jdMustNotHave: ['azure', 'microsoft azure'] },
-    { from: 'azure', to: 'gcp', jdRequired: ['gcp', 'google cloud', 'vertex ai', 'bigquery'], jdMustNotHave: ['azure', 'microsoft azure'] },
-    { from: 'aws', to: 'azure', jdRequired: ['azure', 'microsoft azure'], jdMustNotHave: ['aws', 'amazon'] },
-    { from: 'aws', to: 'gcp', jdRequired: ['gcp', 'google cloud'], jdMustNotHave: ['aws', 'amazon'] },
-    { from: 'angular', to: 'react', jdRequired: ['react', 'react.js', 'reactjs'], jdMustNotHave: [] },
-    { from: 'react', to: 'angular', jdRequired: ['angular'], jdMustNotHave: [] },
-    { from: 'angular', to: 'vue', jdRequired: ['vue', 'vue.js', 'vuejs'], jdMustNotHave: [] },
-  ];
-
-  function isSwapAllowed(findText, replaceText) {
-    const findLower = (findText || '').toLowerCase().trim();
-    const replaceLower = (replaceText || '').toLowerCase().trim();
-
-    // BLOCK generic single-word cloud swaps like "Azure" → "AWS"
-    // These cause nonsense like "Microsoft AWS", "AWS AD B2C" etc.
-    const genericCloudSwaps = [
-      ['azure', 'aws'], ['azure', 'amazon'], ['azure', 'gcp'], ['azure', 'google'],
-      ['aws', 'azure'], ['aws', 'gcp'], ['aws', 'google'],
-      ['gcp', 'azure'], ['gcp', 'aws'],
-    ];
-    for (const [from, to] of genericCloudSwaps) {
-      if (findLower === from && replaceLower === to) {
-        console.log(`BLOCKED generic swap: "${findText}" → "${replaceText}"`);
-        return false;
-      }
-    }
-
-    for (const guard of cloudSwapGuards) {
-      // Check if this swap matches a guarded pattern
-      const isGuardedSwap = findLower.includes(guard.from) && replaceLower.includes(guard.to.split(' ')[0]);
-      if (isGuardedSwap) {
-        // Only allow if JD explicitly mentions the target technology
-        const jdAllows = guard.jdRequired.some(req => jdLower.includes(req));
-        // Block if JD explicitly mentions the source technology (means it wants to KEEP it)
-        const jdForbids = (guard.jdMustNotHave || []).some(req => jdLower.includes(req));
-        if (!jdAllows || jdForbids) {
-          console.log(`BLOCKED swap: "${findText.slice(0,40)}" → "${replaceText.slice(0,40)}" (JD requires=${jdAllows}, forbids=${jdForbids})`);
-          return false;
-        }
-      }
-    }
-    return true;
-  }
-
-  const swaps = [...(instructions.swaps || [])];
-  swaps.sort((a, b) => (b.find?.length || 0) - (a.find?.length || 0));
-
-  for (const swap of swaps) {
-    if (!swap.find || !swap.replace) continue;
-    if (swap.find.trim() === swap.replace.trim()) continue;
-    // Validate swap against JD before applying
-    if (!isSwapAllowed(swap.find, swap.replace)) continue;
-
-    const isRecentOnly = swap.scope === 'recent_only';
-
-    // Find older projects boundary — never touch beyond this
-    const olderBoundary = (() => {
-      const oldMarkers = ['Fannie Mae', 'LuluLemon', 'Lulu Lemon', 'Infosys', 'Wipro', 'TCS',
-        'Cognizant', 'Accenture', 'Capgemini', 'Apple', 'Citigroup', 'LAHD',
-        'Apollo', 'previous employer'];
-      for (const m of oldMarkers) {
-        if (resumeText.includes(m)) {
-          const idx = xml.indexOf(m);
-          if (idx > 0) return idx;
-        }
-      }
-      return xml.length;
-    })();
-
-    if (isRecentOnly) {
-      // Only swap before older projects boundary
-      const before = xml.slice(0, olderBoundary);
-      const older = xml.slice(olderBoundary);
-      const newBefore = applyTextSwap(before, swap.find.trim(), swap.replace.trim());
-      if (newBefore !== before) {
-        xml = newBefore + older;
-        swapsApplied.push(`${swap.find.trim().slice(0, 35)} → ${swap.replace.trim().slice(0, 35)}`);
-      }
-    } else {
-      // full_document — applies to summary + skills + recent projects only (not older)
-      const before = xml.slice(0, olderBoundary);
-      const older = xml.slice(olderBoundary);
-      const newBefore = applyTextSwap(before, swap.find.trim(), swap.replace.trim());
-      if (newBefore !== before) {
-        xml = newBefore + older;
-        swapsApplied.push(`${swap.find.trim().slice(0, 35)} → ${swap.replace.trim().slice(0, 35)}`);
-      }
+  // Apply detected swaps ONLY before older boundary
+  for (const [from, to] of detectedSwaps) {
+    const before = xml.slice(0, olderBoundary);
+    const older = xml.slice(olderBoundary);
+    const newBefore = applyTextSwap(before, from, to);
+    if (newBefore !== before) {
+      xml = newBefore + older;
+      swapsApplied.push(`${from.slice(0, 35)} → ${to.slice(0, 35)}`);
     }
   }
 
-  // GUARANTEED TECH STACK SWAPS — only in recent 2 projects, summary, and skills
-  // Never touch older clients
-  const guaranteedSwaps = buildGuaranteedSwaps(instructions.stackDetected || {}, resumeText, jdText);
-  if (guaranteedSwaps.length > 0) {
-    // Find boundaries: recent 2 projects start and 3rd (older) project start
-    const recentProjectsStart = (() => {
-      const markers = ['Professional Experience', 'County of San Bernardino', 'Client:'];
-      for (const m of markers) {
-        const idx = xml.indexOf(m);
-        if (idx > 0) return idx;
-      }
-      return 0;
-    })();
-
-    const olderProjectsStart = (() => {
-      // Find 3rd client/project marker
-      const oldMarkers = ['Fannie Mae', 'LuluLemon', 'Lulu Lemon', 'Infosys', 'Wipro', 'TCS',
-        'Cognizant', 'Accenture', 'Capgemini', 'Apple', 'Citigroup', 'LAHD',
-        'Apollo', 'previous employer'];
-      for (const m of oldMarkers) {
-        if (resumeText.includes(m)) {
-          const idx = xml.indexOf(m);
-          if (idx > 0) return idx;
-        }
-      }
-      return xml.length; // No older projects found — apply to all
-    })();
-
-    // Split XML into: before recent projects | recent 2 projects | older projects
-    const beforeRecent = xml.slice(0, recentProjectsStart);
-    let recentScope = xml.slice(recentProjectsStart, olderProjectsStart);
-    const olderScope = xml.slice(olderProjectsStart);
-
-    // Apply guaranteed swaps ONLY in recent scope
-    for (const [from, to] of guaranteedSwaps) {
-      if (recentScope.includes(from)) {
-        recentScope = recentScope.split(from).join(to);
-        swapsApplied.push(`Guaranteed: ${from.slice(0, 30)} → ${to.slice(0, 30)}`);
-      } else {
-        // Try paragraph-level swap within recent scope only
-        const paras = extractParagraphs(recentScope);
-        for (const para of paras) {
-          if (para.text.includes(from)) {
-            const newText = para.text.split(from).join(to);
-            const pPrM = para.xml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
-            const rPrM = para.xml.match(/<w:rPr>[\s\S]*?<\/w:rPr>/);
-            const pPr = pPrM ? pPrM[0] : '';
-            const rPr = rPrM ? rPrM[0].replace(/<w:b\/>/g,'').replace(/<w:bCs\/>/g,'') : '<w:rPr><w:sz w:val="20"/></w:rPr>';
-            const escaped = newText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-            recentScope = recentScope.slice(0, para.index) +
-              `<w:p>${pPr}<w:r>${rPr}<w:t xml:space="preserve">${escaped}</w:t></w:r></w:p>` +
-              recentScope.slice(para.index + para.xml.length);
-            swapsApplied.push(`Guaranteed: ${from.slice(0, 30)} → ${to.slice(0, 30)}`);
-            break;
-          }
-        }
-      }
-    }
-
-    // Also apply summary/skills swaps to the before-recent section (summary + skills)
-    let beforeRecentUpdated = beforeRecent;
-    for (const [from, to] of guaranteedSwaps) {
-      if (beforeRecentUpdated.includes(from)) {
-        beforeRecentUpdated = beforeRecentUpdated.split(from).join(to);
-      }
-    }
-
-    xml = beforeRecentUpdated + recentScope + olderScope; // Older scope NEVER touched
-  }
-
-  // REMOVALS — only from recent 2 projects, never older clients
-  const removalBoundary = (() => {
-    const oldMarkers = ['Fannie Mae', 'LuluLemon', 'Lulu Lemon', 'Infosys', 'Wipro', 'TCS',
-      'Cognizant', 'Accenture', 'Capgemini', 'Apple', 'Citigroup', 'LAHD',
-      'Apollo', 'previous employer'];
-    for (const m of oldMarkers) {
-      if (resumeText.includes(m)) {
-        const idx = xml.indexOf(m);
-        if (idx > 0) return idx;
-      }
-    }
-    return xml.length;
-  })();
-
+  // Apply removals ONLY before older boundary
   for (const removal of (instructions.remove || [])) {
     if (!removal.find) continue;
     const snippet = removal.find.trim().slice(0, 50);
-    // Only remove if the bullet is in recent 2 projects (before older boundary)
     const snippetIdx = xml.indexOf(snippet);
-    if (snippetIdx === -1 || snippetIdx > removalBoundary) continue;
+    if (snippetIdx === -1 || snippetIdx >= olderBoundary) continue;
     const newXml = removeParagraph(xml, snippet);
     if (newXml !== xml) {
       xml = newXml;
       removedBullets.push(snippet);
+      // Update boundary after removal
+      olderBoundary = Math.max(0, olderBoundary - (xml.length - newXml.length + (xml.length - newXml.length)));
     }
   }
 
-  // ADDITIONS
+  // Apply additions ONLY before older boundary
   let currentParas = extractParagraphs(xml);
   for (const addition of (instructions.add || [])) {
     if (!addition.text || !addition.insertAfter) continue;
     const afterSnippet = addition.insertAfter.trim().slice(0, 50);
-    const templatePara = currentParas.find(p => p.text.includes(afterSnippet));
+    const templatePara = currentParas.find(p =>
+      p.text.includes(afterSnippet) && p.index < olderBoundary
+    );
     if (!templatePara) { console.log(`insertAfter not found: "${afterSnippet}"`); continue; }
     const newBulletXml = buildBulletPara(addition.text, addition.techTerms || [], templatePara.xml);
     const newXml = insertAfterParagraph(xml, afterSnippet, newBulletXml, currentParas);
@@ -683,35 +500,6 @@ function applyToDocx(docxBuffer, instructions, resumeText, jdText) {
       xml = newXml;
       addedBullets.push(addition.text.slice(0, 60));
       currentParas = extractParagraphs(xml);
-    }
-  }
-
-  // SKILLS UPDATES — update technical skills section
-  for (const skillUpdate of (instructions.skillsUpdates || [])) {
-    if (!skillUpdate.find || !skillUpdate.replace) continue;
-    const newXml = applyTextSwap(xml, skillUpdate.find.trim(), skillUpdate.replace.trim());
-    if (newXml !== xml) {
-      xml = newXml;
-      swapsApplied.push(`Skills: ${skillUpdate.find.trim().slice(0, 30)} → ${skillUpdate.replace.trim().slice(0, 30)}`);
-    }
-  }
-
-  // SUMMARY UPDATE — replace full summary if provided
-  if (instructions.summaryUpdate && instructions.summaryUpdate.length > 50) {
-    // Find and update the first long summary bullet
-    const summaryParas = currentParas.filter(p =>
-      p.text.length > 80 &&
-      !p.text.includes('Client:') &&
-      !p.text.includes('Environment:') &&
-      !p.text.includes('Role:')
-    );
-    if (summaryParas.length > 0) {
-      const firstSummaryPara = summaryParas[0];
-      const newXml = applyTextSwap(xml, firstSummaryPara.text, instructions.summaryUpdate.trim());
-      if (newXml !== xml) {
-        xml = newXml;
-        swapsApplied.push(`Summary updated`);
-      }
     }
   }
 
@@ -764,35 +552,42 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
     if (!jobDescription || jobDescription.trim().length < 50)
       return res.status(400).json({ error: 'Job description must be at least 50 characters' });
 
+    const jdText = jobDescription.trim();
     const ext = path.extname(req.file.originalname).toLowerCase();
     const resumeText = await extractText(req.file.buffer, req.file.originalname);
-    const instructions = await analyzeWithClaude(resumeText, jobDescription.trim());
 
+    // Step 1: Claude identifies missing keywords and weak points (NO swaps)
+    const analysis = await analyzeWithClaude(resumeText, jdText);
+
+    // Step 2: Code detects technology swaps from JD vs resume (rule-based, no AI)
+    const detectedSwaps = detectSwaps(resumeText, jdText);
+
+    // Step 3: Apply everything to DOCX
     let docxBase64 = null;
     let swapsApplied = [], removedBullets = [], addedBullets = [];
 
     if (ext === '.docx') {
       try {
-        const result = applyToDocx(req.file.buffer, instructions, resumeText, jobDescription.trim());
+        const result = applyToDocx(req.file.buffer, analysis, resumeText, jdText, detectedSwaps);
         docxBase64 = result.buffer.toString('base64');
         swapsApplied = result.swapsApplied;
         removedBullets = result.removedBullets;
         addedBullets = result.addedBullets;
-        console.log(`Applied: ${swapsApplied.length} swaps, ${removedBullets.length} removed, ${addedBullets.length} added`);
+        console.log(`Done: ${swapsApplied.length} swaps, ${removedBullets.length} removed, ${addedBullets.length} added`);
       } catch (err) { console.error('DOCX error:', err.message); }
     }
 
     const changes = [
-      ...swapsApplied.map(s => ({ type: 'modified', description: `Updated: ${s}` })),
+      ...swapsApplied.map(s => ({ type: 'modified', description: `Tech updated: ${s}` })),
       ...removedBullets.map(r => ({ type: 'removed', description: `Removed: ${r}` })),
       ...addedBullets.map(a => ({ type: 'added', description: `Added: ${a}` })),
     ];
-    if (changes.length === 0) changes.push({ type: 'added', description: instructions.summary || 'Resume analyzed and optimized' });
+    if (changes.length === 0) changes.push({ type: 'added', description: analysis.summary || 'Resume optimized' });
 
     const entry = {
       id: `opt_${Date.now()}`,
-      jdSnippet: jobDescription.trim().slice(0, 200),
-      matchScore: instructions.matchScoreAfter || 93,
+      jdSnippet: jdText.slice(0, 200),
+      matchScore: analysis.matchScoreAfter || 93,
       keywordsAdded: addedBullets.length + swapsApplied.length,
       createdAt: new Date().toISOString(),
       resumeOutput: resumeText
@@ -805,7 +600,7 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
       success: true,
       docxBase64,
       optimizedResume: resumeText,
-      matchScore: instructions.matchScoreAfter || 93,
+      matchScore: analysis.matchScoreAfter || 93,
       changes,
       keywordsAdded: addedBullets.length + swapsApplied.length,
       bulletsEnhanced: addedBullets.length,
@@ -813,11 +608,8 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
       swapsApplied,
       removedCount: removedBullets.length,
       addedCount: addedBullets.length,
-      jdStack: {
-        roleType: instructions.roleType || '',
-        mismatches: (instructions.techMismatches || []).map(m => `${m.resumeHas} → ${m.jdWants} (${m.category})`)
-      },
-      summary: instructions.summary || ''
+      jdStack: { swapsDetected: detectedSwaps.length, roleType: analysis.roleType },
+      summary: analysis.summary || ''
     });
 
   } catch (err) {
