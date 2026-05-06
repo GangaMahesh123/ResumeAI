@@ -158,32 +158,41 @@ async function analyzeWithClaude(resumeText, jdText) {
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 4000,
-    system: `You are a Resume Tailoring Assistant. Analyze a resume against a job description.
+    system: `You are a Resume Tailoring Assistant. Your goal is to make the resume match 92-95% of the JD requirements.
 
 YOUR ONLY JOBS:
-1. Identify JD keywords/skills that are MISSING from the resume — these need to be ADDED
-2. Identify bullets that are WEAK, REPEATED, or IRRELEVANT to THIS specific JD — these can be REMOVED
-3. Suggest what to add and where to add it in the recent 2 projects
+1. Go through EVERY skill/tool/technology in the JD one by one
+2. Check if each one exists in the resume
+3. If MISSING → add a bullet for it in the most relevant recent project
+4. If WEAK/REPEATED/IRRELEVANT → remove it
 
 YOU DO NOT handle technology swaps. The system handles swaps automatically.
-DO NOT suggest swapping Azure to AWS, Angular to React, or any cloud/framework swaps.
-DO NOT generate any "swaps" array entries for cloud providers or frontend frameworks.
-Only generate swaps for minor phrasing improvements within the same technology.
+DO NOT suggest swapping cloud providers (Azure/AWS/GCP) or frontend frameworks (Angular/React/Vue).
+DO NOT generate swaps — only additions and removals.
+
+SYSTEMATIC PROCESS:
+Step 1: List ALL skills/tools mentioned in JD (every single one)
+Step 2: For each one, check if it exists in the resume
+Step 3: If missing AND important → create an "add" entry
+Step 4: Be comprehensive — do not stop after a few additions
+Step 5: Target 92-95% coverage of all JD requirements
 
 RULES FOR ADDITIONS:
-- Only add skills that are explicitly required by the JD AND missing from resume
-- New bullets must match the candidate's writing style and seniority
+- Add ALL important missing JD skills — do not stop early
+- New bullets must match the candidate's writing style and seniority level
 - Only add to the 2 most recent jobs (not older clients)
-- insertAfter must be first 60 chars of an EXISTING experience bullet copied exactly
-- No markdown bold in text — use techTerms array
-- Additions must be realistic and defensible in interviews
+- insertAfter must be EXACT first 60 chars of an existing experience bullet
+- No markdown bold (**text**) — use techTerms array for bold terms
+- Each bullet must be realistic and defensible in an interview
+- Keep bullets concise — match the length of existing bullets
 
 RULES FOR REMOVALS:
-- Only remove if bullet is COMPLETELY irrelevant to this JD's domain/role
+- Only remove if bullet is COMPLETELY irrelevant to this JD
 - Only remove weak/repeated/obvious statements
-- NEVER remove core technical achievements
+- NEVER remove core technical achievements, architecture decisions, quantified results
 - NEVER remove primary tech stack bullets
 - Only remove from recent 2 projects, never older clients
+- Removals should roughly balance additions (preserve page count)
 
 VERSION RULES:
 - Any version added must match the project date range
@@ -193,7 +202,7 @@ Return ONLY valid JSON.`,
 
     messages: [{
       role: 'user',
-      content: `Analyze this resume vs JD. Return additions and removals only.
+      content: `Analyze this resume against the JD systematically. Go through EVERY JD skill one by one.
 
 RESUME:
 ${resumeText.slice(0, 6000)}
@@ -201,28 +210,34 @@ ${resumeText.slice(0, 6000)}
 JOB DESCRIPTION:
 ${jdText.slice(0, 2000)}
 
-Return ONLY this JSON:
+INSTRUCTIONS:
+1. Extract every skill/tool/technology from the JD
+2. Check each one against the resume
+3. For every missing important skill → create an add entry
+4. Be thorough — cover ALL missing JD requirements, not just a few
+5. Target 92-95% JD match
+
+Return ONLY this JSON (no markdown):
 {
-  "matchScoreBefore": <integer>,
-  "matchScoreAfter": <integer 92-95>,
+  "matchScoreBefore": <integer — honest current score>,
+  "matchScoreAfter": <integer — projected score after all additions>,
   "roleType": "full_stack|backend|frontend|devops|data_engineer|ml_engineer|other",
-  "missingKeywords": ["keyword1", "keyword2"],
+  "jdSkillsChecked": ["skill1 ✅", "skill2 ❌ missing", "skill3 ✅"],
   "remove": [
     {
       "find": "first 60 chars of bullet EXACTLY from resume",
-      "reason": "why irrelevant to THIS JD"
+      "reason": "specific reason why irrelevant to THIS JD"
     }
   ],
   "add": [
     {
-      "text": "new bullet text matching candidate style",
+      "text": "new bullet text matching candidate writing style — no markdown bold",
       "insertAfter": "first 60 chars of existing experience bullet EXACTLY from resume",
-      "techTerms": ["Term1", "Term2"],
-      "reason": "which JD keyword this covers"
+      "techTerms": ["ExactTerm1", "ExactTerm2"],
+      "reason": "which JD keyword/skill this covers"
     }
   ],
-  "summaryKeywords": ["keyword1", "keyword2"],
-  "summary": "brief description of changes"
+  "summary": "X% before, Y% after, key changes made"
 }`
     }]
   });
