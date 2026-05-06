@@ -404,7 +404,7 @@ STRICT RULES:
 - Return ONLY valid JSON, no markdown`,
       messages: [{
         role: 'user',
-        content: `Analyze gaps between this resume and JD. Return missing skills as bullet suggestions.
+        content: `You are a resume gap analyzer. Go through EVERY skill in the JD one by one and check if it exists in the resume.
 
 RESUME:
 ${resumeText.slice(0, 5000)}
@@ -412,13 +412,22 @@ ${resumeText.slice(0, 5000)}
 JOB DESCRIPTION:
 ${jdText.slice(0, 2000)}
 
+INSTRUCTIONS:
+1. Read every single skill/tool/technology mentioned in the JD
+2. Search for each one in the resume text
+3. If NOT found → add it to missingSkills with a natural bullet
+4. Be exhaustive — check ALL skills including minor ones like build tools, linting tools, routing libraries
+5. Cover frontend skills (routing, forms, build tools, CSS frameworks), backend skills, cloud skills, security skills
+6. Target: every important JD keyword must appear in the output resume
+7. Removals: only remove truly irrelevant bullets — keep page count balanced
+
 Return ONLY this JSON:
 {
   "roleType": "full_stack|backend|frontend|devops|data_engineer|ml_engineer|other",
   "missingSkills": [
     {
-      "skill": "skill name",
-      "bullet": "complete bullet text matching candidate writing style — no markdown bold",
+      "skill": "exact skill name from JD",
+      "bullet": "complete bullet text matching candidate writing style — no markdown bold — realistic",
       "techTerms": ["Term1","Term2"],
       "category": "frontend|backend|cloud|database|devops|testing|security|other"
     }
@@ -426,10 +435,10 @@ Return ONLY this JSON:
   "weakBullets": [
     {
       "snippet": "first 40 chars of weak bullet from resume",
-      "reason": "why irrelevant to this JD"
+      "reason": "why irrelevant to this specific JD"
     }
   ],
-  "summary": "brief summary of gaps found"
+  "summary": "X missing skills found, Y weak bullets identified"
 }`
       }]
     });
