@@ -344,9 +344,12 @@ function buildGuaranteedSwaps(stackDetected, resumeText, jdText) {
   const jdWants = (term) => jdText.toLowerCase().includes(term.toLowerCase());
   const jdWantsAny = (...terms) => terms.some(t => jdText.toLowerCase().includes(t.toLowerCase()));
 
-  // CLOUD SWAPS — only if JD explicitly mentions the target cloud
-  // If JD says "AWS" or "Amazon" → swap Azure to AWS
-  if (stackDetected.cloud === 'aws' && jdWantsAny('AWS', 'Amazon Web Services', 'Amazon S3', 'EC2', 'Lambda', 'RDS') && resumeHas('Azure')) {
+  // CLOUD SWAPS — only if JD explicitly mentions the target cloud AND does NOT mention existing cloud
+  // If JD says "AWS" or "Amazon" AND does not say "Azure" → swap Azure to AWS
+  if (stackDetected.cloud === 'aws'
+      && jdWantsAny('AWS', 'Amazon Web Services', 'Amazon S3', 'EC2', 'Lambda', 'RDS')
+      && !jdWantsAny('Azure', 'Microsoft Azure')
+      && resumeHas('Azure')) {
       // Longest phrases first
       [
         ['Azure API Management (APIM)', 'AWS API Gateway'],
@@ -373,8 +376,11 @@ function buildGuaranteedSwaps(stackDetected, resumeText, jdText) {
       ].forEach(([f, t]) => swaps.push([f, t]));
   }
 
-  // GCP swaps — only if JD explicitly mentions GCP
-  if (stackDetected.cloud === 'gcp' && jdWantsAny('GCP', 'Google Cloud', 'Vertex AI', 'BigQuery', 'Cloud Run') && resumeHas('Azure')) {
+  // GCP swaps — only if JD explicitly mentions GCP and NOT Azure
+  if (stackDetected.cloud === 'gcp'
+      && jdWantsAny('GCP', 'Google Cloud', 'Vertex AI', 'BigQuery', 'Cloud Run')
+      && !jdWantsAny('Azure', 'Microsoft Azure')
+      && resumeHas('Azure')) {
     [
       ['Azure API Management (APIM)', 'Google Cloud Apigee'],
       ['Azure API Management', 'Google Cloud Apigee'],
@@ -474,13 +480,14 @@ function applyToDocx(docxBuffer, instructions, resumeText, jdText) {
 
   // Technologies that should NEVER be swapped unless JD explicitly asks
   const cloudSwapGuards = [
-    { from: 'azure', to: 'aws', jdRequired: ['aws', 'amazon web services', 'ec2', 'lambda', 's3', 'rds'] },
-    { from: 'azure', to: 'gcp', jdRequired: ['gcp', 'google cloud', 'vertex ai', 'bigquery'] },
-    { from: 'aws', to: 'azure', jdRequired: ['azure', 'microsoft azure'] },
-    { from: 'aws', to: 'gcp', jdRequired: ['gcp', 'google cloud'] },
-    { from: 'angular', to: 'react', jdRequired: ['react', 'react.js', 'reactjs'] },
-    { from: 'react', to: 'angular', jdRequired: ['angular'] },
-    { from: 'angular', to: 'vue', jdRequired: ['vue', 'vue.js', 'vuejs'] },
+    // Cloud swaps — require JD to mention target AND not mention existing
+    { from: 'azure', to: 'aws', jdRequired: ['aws', 'amazon web services', 'ec2', 'lambda', 's3', 'rds'], jdMustNotHave: ['azure', 'microsoft azure'] },
+    { from: 'azure', to: 'gcp', jdRequired: ['gcp', 'google cloud', 'vertex ai', 'bigquery'], jdMustNotHave: ['azure', 'microsoft azure'] },
+    { from: 'aws', to: 'azure', jdRequired: ['azure', 'microsoft azure'], jdMustNotHave: ['aws', 'amazon'] },
+    { from: 'aws', to: 'gcp', jdRequired: ['gcp', 'google cloud'], jdMustNotHave: ['aws', 'amazon'] },
+    { from: 'angular', to: 'react', jdRequired: ['react', 'react.js', 'reactjs'], jdMustNotHave: [] },
+    { from: 'react', to: 'angular', jdRequired: ['angular'], jdMustNotHave: [] },
+    { from: 'angular', to: 'vue', jdRequired: ['vue', 'vue.js', 'vuejs'], jdMustNotHave: [] },
   ];
 
   function isSwapAllowed(findText, replaceText) {
@@ -492,8 +499,10 @@ function applyToDocx(docxBuffer, instructions, resumeText, jdText) {
       if (isGuardedSwap) {
         // Only allow if JD explicitly mentions the target technology
         const jdAllows = guard.jdRequired.some(req => jdLower.includes(req));
-        if (!jdAllows) {
-          console.log(`BLOCKED swap: "${findText.slice(0,40)}" → "${replaceText.slice(0,40)}" (JD doesn't require ${guard.to})`);
+        // Block if JD explicitly mentions the source technology (means it wants to KEEP it)
+        const jdForbids = (guard.jdMustNotHave || []).some(req => jdLower.includes(req));
+        if (!jdAllows || jdForbids) {
+          console.log(`BLOCKED swap: "${findText.slice(0,40)}" → "${replaceText.slice(0,40)}" (JD requires=${jdAllows}, forbids=${jdForbids})`);
           return false;
         }
       }
