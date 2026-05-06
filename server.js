@@ -420,7 +420,7 @@ function applyToDocx(docxBuffer, instructions, resumeText) {
         for (const [from, to] of hardcodedSwaps) {
           if (scope.includes(from)) {
             scope = scope.split(from).join(to);
-            hardcodedApplied.push(\`\${from.slice(0,30)} → \${to.slice(0,30)}\`);
+            hardcodedApplied.push(`${from.slice(0,30)} → ${to.slice(0,30)}`);
           }
         }
         xml = beforeExp + scope + after;
@@ -430,11 +430,11 @@ function applyToDocx(docxBuffer, instructions, resumeText) {
       for (const [from, to] of hardcodedSwaps) {
         if (xml.includes(from)) {
           xml = xml.split(from).join(to);
-          hardcodedApplied.push(\`\${from.slice(0,30)} → \${to.slice(0,30)}\`);
+          hardcodedApplied.push(`${from.slice(0,30)} → ${to.slice(0,30)}`);
         }
       }
     }
-    if (hardcodedApplied.length > 0) console.log(\`Hardcoded swaps: \${hardcodedApplied.length}\`);
+    if (hardcodedApplied.length > 0) console.log(`Hardcoded swaps: ${hardcodedApplied.length}`);
   }
 
   const swapsApplied = [];
