@@ -312,11 +312,131 @@ Return ONLY this JSON (no markdown):
     const parsed = JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
     console.log(`Plan: ${parsed.swaps?.length||0} swaps, ${parsed.remove?.length||0} removals, ${parsed.add?.length||0} additions`);
     console.log(`Role: ${parsed.roleType}, Mismatches: ${parsed.techMismatches?.length||0}`);
+
+    // Build stackDetected from techMismatches for guaranteed swaps
+    const mismatches = parsed.techMismatches || [];
+    parsed.stackDetected = {
+      cloud: mismatches.find(m => m.category === 'cloud')?.jdWants?.toLowerCase().includes('aws') ? 'aws'
+           : mismatches.find(m => m.category === 'cloud')?.jdWants?.toLowerCase().includes('gcp') ? 'gcp'
+           : mismatches.find(m => m.category === 'cloud')?.jdWants?.toLowerCase().includes('azure') ? 'azure'
+           : parsed.stackDetected?.cloud || 'none',
+      frontend: mismatches.find(m => m.category === 'frontend')?.jdWants?.toLowerCase().includes('react') ? 'react'
+              : mismatches.find(m => m.category === 'frontend')?.jdWants?.toLowerCase().includes('vue') ? 'vue'
+              : mismatches.find(m => m.category === 'frontend')?.jdWants?.toLowerCase().includes('angular') ? 'angular'
+              : parsed.stackDetected?.frontend || 'none',
+    };
+    console.log(`Stack detected: cloud=${parsed.stackDetected.cloud}, frontend=${parsed.stackDetected.frontend}`);
     return parsed;
   } catch (e) {
     console.error('Parse error:', e.message, raw.slice(0, 200));
     return { swaps: [], remove: [], add: [], matchScoreBefore: 70, matchScoreAfter: 88, techMismatches: [], summary: '' };
   }
+}
+
+// ── Build guaranteed swap list based on detected stack mismatch ──────────────
+function buildGuaranteedSwaps(stackDetected, resumeText) {
+  const swaps = [];
+  const has = (term) => resumeText.includes(term);
+
+  // Cloud swaps
+  if (stackDetected.cloud === 'aws' || (has('Azure') && !has('Amazon Web Services'))) {
+    if (stackDetected.cloud === 'aws') {
+      // Longest phrases first
+      [
+        ['Azure API Management (APIM)', 'AWS API Gateway'],
+        ['Azure API Management', 'AWS API Gateway'],
+        ['Azure API Gateway (v2)', 'AWS API Gateway'],
+        ['Azure API Gateway', 'AWS API Gateway'],
+        ['Azure App Services', 'AWS Elastic Beanstalk'],
+        ['Azure Functions v4', 'AWS Lambda'],
+        ['Azure Functions', 'AWS Lambda'],
+        ['Azure Blob Storage', 'Amazon S3'],
+        ['Azure SQL Database', 'Amazon RDS PostgreSQL'],
+        ['Azure SQL', 'Amazon RDS'],
+        ['Azure AD B2C', 'AWS Cognito'],
+        ['Azure AD', 'AWS IAM'],
+        ['Azure Monitor', 'Amazon CloudWatch'],
+        ['Application Insights', 'AWS CloudWatch Insights'],
+        ['Azure Key Vault', 'AWS Secrets Manager'],
+        ['Azure DevOps CI/CD pipelines', 'AWS CodePipeline CI/CD pipelines'],
+        ['Azure DevOps CI/CD', 'AWS CodePipeline'],
+        ['Azure DevOps', 'AWS CodePipeline'],
+        ['Azure Repos', 'AWS CodeCommit'],
+        ['Microsoft Azure', 'Amazon Web Services (AWS)'],
+        ['Azure services', 'AWS services'],
+      ].forEach(([f, t]) => swaps.push([f, t]));
+    }
+  }
+
+  if (stackDetected.cloud === 'gcp') {
+    [
+      ['Azure API Management (APIM)', 'Google Cloud Apigee'],
+      ['Azure API Management', 'Google Cloud Apigee'],
+      ['Azure API Gateway', 'Google Cloud Endpoints'],
+      ['Azure App Services', 'Google Cloud Run'],
+      ['Azure Functions v4', 'Google Cloud Functions'],
+      ['Azure Functions', 'Google Cloud Functions'],
+      ['Azure Blob Storage', 'Google Cloud Storage'],
+      ['Azure SQL Database', 'Google Cloud SQL'],
+      ['Azure SQL', 'Google Cloud SQL'],
+      ['Azure AD B2C', 'Google Identity Platform'],
+      ['Azure AD', 'Google Cloud IAM'],
+      ['Azure Monitor', 'Google Cloud Monitoring'],
+      ['Application Insights', 'Google Cloud Trace'],
+      ['Azure Key Vault', 'Google Secret Manager'],
+      ['Azure DevOps CI/CD pipelines', 'Google Cloud Build CI/CD pipelines'],
+      ['Azure DevOps', 'Google Cloud Build'],
+      ['Azure Repos', 'Google Cloud Source Repositories'],
+      ['Microsoft Azure', 'Google Cloud Platform (GCP)'],
+    ].forEach(([f, t]) => swaps.push([f, t]));
+  }
+
+  // Frontend swaps
+  if (stackDetected.frontend === 'react' && has('Angular')) {
+    [
+      ['Angular 14 to Angular 18', 'React 17 to React 18'],
+      ['Angular 14–18', 'React 17–18'],
+      ['Angular 14, progressively upgrading to Angular 18', 'React 17, progressively upgrading to React 18'],
+      ['Angular (11–18)', 'React (16–18)'],
+      ['Angular 12 to Angular 15', 'React 16 to React 18'],
+      ['Angular 12 to React 18', 'React 16 to React 18'],
+      ['Angular 12 front-end', 'React 17 front-end'],
+      ['Angular 12', 'React 17'],
+      ['Angular 14', 'React 18'],
+      ['Angular 15', 'React 18'],
+      ['Angular 18', 'React 18'],
+      ['Angular 6', 'React 16'],
+      ['AngularJS', 'React.js'],
+      ['Angular', 'React'],
+      ['RxJS 7 to 8', 'Redux Toolkit'],
+      ['RxJS 7–8', 'Redux Toolkit'],
+      ['RxJS', 'Redux Toolkit'],
+      ['Karma', 'Jest'],
+      ['Jasmine', 'React Testing Library'],
+      ['Protractor', 'Cypress'],
+    ].forEach(([f, t]) => swaps.push([f, t]));
+  }
+
+  if (stackDetected.frontend === 'vue' && has('Angular')) {
+    [
+      ['Angular 14 to Angular 18', 'Vue 2 to Vue 3'],
+      ['Angular 14', 'Vue 3'], ['Angular 18', 'Vue 3'],
+      ['Angular 12', 'Vue 2'], ['Angular', 'Vue.js'],
+      ['RxJS', 'Vuex / Pinia'], ['Karma', 'Vitest'], ['Jasmine', 'Vue Test Utils'],
+    ].forEach(([f, t]) => swaps.push([f, t]));
+  }
+
+  if (stackDetected.frontend === 'angular' && has('React')) {
+    [
+      ['React 17 to React 18', 'Angular 14 to Angular 18'],
+      ['React 18', 'Angular 18'], ['React 17', 'Angular 14'],
+      ['React.js', 'Angular'], ['React', 'Angular'],
+      ['Redux Toolkit', 'RxJS'], ['Jest', 'Karma'],
+      ['React Testing Library', 'Jasmine'], ['Cypress', 'Protractor'],
+    ].forEach(([f, t]) => swaps.push([f, t]));
+  }
+
+  return swaps;
 }
 
 // ── Apply all instructions to DOCX ───────────────────────────────────────────
@@ -374,6 +494,17 @@ function applyToDocx(docxBuffer, instructions, resumeText) {
         xml = newXml;
         swapsApplied.push(`${swap.find.trim().slice(0, 35)} → ${swap.replace.trim().slice(0, 35)}`);
       }
+    }
+  }
+
+  // GUARANTEED TECH STACK SWAPS — run after Claude swaps to catch anything missed
+  // These are applied at paragraph level so they always work regardless of XML run splitting
+  const guaranteedSwaps = buildGuaranteedSwaps(instructions.stackDetected || {}, resumeText);
+  for (const [from, to] of guaranteedSwaps) {
+    const newXml = applyTextSwap(xml, from, to);
+    if (newXml !== xml) {
+      xml = newXml;
+      swapsApplied.push(`Guaranteed: ${from.slice(0, 30)} → ${to.slice(0, 30)}`);
     }
   }
 
