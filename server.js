@@ -488,8 +488,32 @@ function decidePlacement(skill, paras, olderBoundary, resumeText) {
   const skillLower = (skill.skill || '').toLowerCase();
   const bulletLower = (skill.bullet || '').toLowerCase();
 
-  // Find the most recent project's bullet paragraphs (before older boundary)
-  const recentParas = paras.filter(p => p.index < olderBoundary && p.text.length > 30);
+  // CRITICAL: Only place bullets inside EXPERIENCE sections (not Summary, not Skills table)
+  // Find the start of Professional Experience in the XML
+  // Experience starts after "Professional Experience" or first "Client:" marker
+  const experienceMarkers = ['Professional Experience', 'Client:', 'County of San Bernardino', 'Elevance'];
+  const summaryEndMarkers = ['Technical Skills', 'Professional Experience', 'Client:'];
+
+  // Find where experience section starts in paras
+  let experienceStart = 0;
+  for (const para of paras) {
+    const t = para.text;
+    if (experienceMarkers.some(m => t.includes(m))) {
+      experienceStart = para.index;
+      break;
+    }
+  }
+
+  // Only use paragraphs that are:
+  // 1. After experience section starts
+  // 2. Before older client boundary
+  // 3. Long enough to be a bullet (not headers)
+  const experienceParas = paras.filter(p =>
+    p.index >= experienceStart &&
+    p.index < olderBoundary &&
+    p.text.length > 40 &&
+    !summaryEndMarkers.some(m => p.text.includes(m))
+  );
 
   // Try to find a contextually relevant paragraph based on category
   const categoryKeywords = {
@@ -506,14 +530,14 @@ function decidePlacement(skill, paras, olderBoundary, resumeText) {
   const keywords = categoryKeywords[cat] || categoryKeywords.other;
   const allKeywords = [...keywords, skillLower, ...bulletLower.split(' ').filter(w => w.length > 4)];
 
-  // Find best matching paragraph in recent projects
+  // Find best matching paragraph in experience sections only
   for (const kw of allKeywords) {
-    const match = recentParas.find(p => p.text.toLowerCase().includes(kw));
+    const match = experienceParas.find(p => p.text.toLowerCase().includes(kw));
     if (match) return match;
   }
 
-  // Fallback: last bullet in first recent project
-  return recentParas[Math.floor(recentParas.length / 2)] || recentParas[recentParas.length - 1] || null;
+  // Fallback: last bullet in most recent project (end of experienceParas)
+  return experienceParas[experienceParas.length - 1] || null;
 }
 
 // ════════════════════════════════════════════════════════════════════
