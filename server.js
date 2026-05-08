@@ -278,9 +278,8 @@ function calculateMatchScore(resumeText, jdText) {
 
   if (total === 0) return 70;
   const raw = (matched / total) * 100;
-  // Scale: raw score tends to be high due to common words matching
-  // A raw score of 70%+ of weighted tech keywords = very good match
-  return Math.min(95, Math.max(50, Math.round(raw)));
+  // Allow range 30-95 so before/after delta is visible
+  return Math.min(95, Math.max(30, Math.round(raw)));
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -783,9 +782,19 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
     }
 
     // Step 6: Recalculate score after on the modified resume text
-    // Build updated resume text by incorporating added bullets
-    const addedBulletsText = addedBullets.join(' ');
-    const updatedResumeText = resumeText + ' ' + addedBulletsText + ' ' + swapsApplied.map(s => s.split('→')[1] || '').join(' ');
+    // Use full bullet text from analysis (not truncated addedBullets log strings)
+    const addedBulletsFullText = (analysis.missingSkills || [])
+      .filter(s => s && s.bullet)
+      .map(s => s.bullet)
+      .join(' ');
+    // Extract swap targets — swapsApplied format is "from → to", grab "to" side
+    const swapTargetsText = swapsApplied
+      .map(s => {
+        const parts = s.split('→');
+        return parts.length > 1 ? parts[1].trim() : '';
+      })
+      .join(' ');
+    const updatedResumeText = resumeText + ' ' + addedBulletsFullText + ' ' + swapTargetsText;
     const scoreAfter = calculateMatchScore(updatedResumeText, jdText);
 
     const changes = [
@@ -810,7 +819,7 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
     res.json({
       success: true,
       docxBase64,
-      optimizedResume: resumeText,
+      optimizedResume: updatedResumeText,
       matchScore: scoreAfter,
       matchScoreBefore: scoreBefore,
       changes,
