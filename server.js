@@ -268,8 +268,22 @@ function detectTechSwaps(resumeText, jdText) {
   const recentHas = (...terms) => textHasAny(recentText, ...terms);
   const swaps = [];
 
-  // CLOUD: Azure → AWS (only if JD wants AWS and does NOT mention Azure as acceptable)
-  if (recentHas('azure') && jdWants('aws','amazon web services','ec2','lambda','dynamodb') && !jdWants('azure','microsoft azure')) {
+  // ── Cloud preference detection ──────────────────────────────────────────────
+  // Handles cases like "AWS preferred (would accept Azure)" — Azure is mentioned
+  // but AWS is explicitly the preference. We detect "prefer*" and "preference" language.
+  const awsIsPreferred = /prefer\w*\s+(aws|amazon)|aws\s+prefer\w*|(aws|amazon).{0,30}prefer\w*/.test(jd);
+  const gcpIsPreferred = /prefer\w*\s+(gcp|google cloud)|gcp\s+prefer\w*|(gcp|google cloud).{0,30}prefer\w*/.test(jd);
+  const azureIsPreferred = /prefer\w*\s+(azure|microsoft azure)|azure\s+prefer\w*|(azure|microsoft azure).{0,30}prefer\w*/.test(jd);
+
+  // Azure is "just acceptable" (not preferred) when JD mentions it only as a fallback:
+  // e.g. "would accept azure", "azure is acceptable", "azure ok"
+  const azureIsAcceptableOnly = jdWants('accept azure','azure acceptable','azure is ok','azure ok','azure is fine')
+    || (jdWants('azure','microsoft azure') && awsIsPreferred);
+
+  // CLOUD: Azure → AWS
+  // Fire if: JD wants AWS AND (Azure not mentioned OR Azure is only mentioned as acceptable fallback)
+  if (recentHas('azure') && jdWants('aws','amazon web services','ec2','lambda','dynamodb') &&
+      (!jdWants('azure','microsoft azure') || azureIsAcceptableOnly)) {
     swaps.push(
       ['Azure API Management (APIM)','AWS API Gateway'],
       ['Azure API Management','AWS API Gateway'],
@@ -295,7 +309,10 @@ function detectTechSwaps(resumeText, jdText) {
     );
   }
   // CLOUD: Azure → GCP
-  if (recentHas('azure') && jdWants('gcp','google cloud','bigquery','vertex ai','cloud run') && !jdWants('azure','microsoft azure')) {
+  const azureIsAcceptableForGCP = jdWants('accept azure','azure acceptable','azure ok')
+    || (jdWants('azure','microsoft azure') && gcpIsPreferred);
+  if (recentHas('azure') && jdWants('gcp','google cloud','bigquery','vertex ai','cloud run') &&
+      (!jdWants('azure','microsoft azure') || azureIsAcceptableForGCP)) {
     swaps.push(
       ['Azure API Management (APIM)','Google Cloud Apigee'],
       ['Azure API Management','Google Cloud Apigee'],
@@ -340,7 +357,10 @@ function detectTechSwaps(resumeText, jdText) {
     );
   }
   // CLOUD: GCP → AWS
-  if (recentHas('google cloud','gcp') && jdWants('aws','amazon') && !jdWants('gcp','google cloud')) {
+  const gcpIsAcceptableOnly = jdWants('accept gcp','gcp acceptable','gcp ok')
+    || (jdWants('gcp','google cloud') && awsIsPreferred);
+  if (recentHas('google cloud','gcp') && jdWants('aws','amazon') &&
+      (!jdWants('gcp','google cloud') || gcpIsAcceptableOnly)) {
     swaps.push(
       ['Google Cloud Run','AWS Elastic Beanstalk'],['Google Cloud Functions','AWS Lambda'],
       ['Google Cloud Storage','Amazon S3'],['Google Cloud SQL','Amazon RDS'],
@@ -431,7 +451,8 @@ STEP 4 — WRITE one realistic bullet per real gap.
 BULLET RULES:
 - Use the EXACT technology name from the JD in the bullet text. JD says "Golang" → write "Golang" (not "Go"). JD says "AWS" → write "AWS" (not "Amazon").
 - Each bullet must fit the specific project's domain and existing tech stack
-- If project uses Azure as primary cloud — do NOT write AWS-specific service bullets for it
+- If project uses Azure as primary cloud AND the JD prefers AWS — write bullets using AWS service equivalents (e.g. AWS Lambda not Azure Functions, Amazon S3 not Azure Blob Storage)
+- If project uses Azure and JD has no AWS preference — keep Azure service names
 - If JD says "Angular OR React" — candidate already satisfies this with Angular. Do NOT flag Angular as missing.
 - Match the candidate's existing bullet style exactly (length, tone, metrics format)
 - Every bullet must be interview-defensible — a real engineer could explain every detail
