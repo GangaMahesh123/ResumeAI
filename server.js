@@ -64,7 +64,7 @@ async function extractText(buffer, originalname) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// FIX 1: WORD BOUNDARY MATCH — prevents 'rds' matching 'standards'
+// WORD BOUNDARY MATCH
 // ════════════════════════════════════════════════════════════════════
 function wordMatch(text, term) {
   const tl = term.toLowerCase();
@@ -80,36 +80,6 @@ function wordMatch(text, term) {
 }
 function textHasAny(text, ...terms) {
   return terms.some(t => wordMatch(text, t));
-}
-
-// ════════════════════════════════════════════════════════════════════
-// FIX 2: FUZZY MATCH — finds closest paragraph even with minor diffs
-// ════════════════════════════════════════════════════════════════════
-function levenshtein(a, b) {
-  const m = a.length, n = b.length;
-  const dp = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
-  for (let i = 1; i <= m; i++)
-    for (let j = 1; j <= n; j++)
-      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
-  return dp[m][n];
-}
-
-function findClosestParagraph(paras, target, maxBoundary = Infinity) {
-  if (!target || target.length < 10) return null;
-  const t = target.toLowerCase().trim().slice(0, 60);
-  let best = null, bestScore = Infinity;
-  for (const para of paras) {
-    if (para.index >= maxBoundary) continue;
-    if (para.text.length < 20) continue;
-    const p = para.text.toLowerCase().slice(0, 60);
-    // Exact include first
-    if (para.text.toLowerCase().includes(t.slice(0, 40))) return para;
-    // Fuzzy fallback
-    const score = levenshtein(p, t);
-    if (score < bestScore && score < 30) { bestScore = score; best = para; }
-  }
-  return best;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -217,73 +187,79 @@ function removeParagraph(xml, findText, boundary) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// FIX 3: CODE-BASED MATCH SCORE (not AI guess)
+// MATCH SCORE — Fixed:
+//   1. Stop words include ALL English function words (of,to,be,is,or,are,in…)
+//   2. Min keyword length = 3 (blocks 'go','of','to','be' etc.)
+//   3. Score floor = 30 so before→after delta is always visible
+//   4. Score ceiling = 95 (never shows 100% as that's not realistic)
 // ════════════════════════════════════════════════════════════════════
 function calculateMatchScore(resumeText, jdText) {
-  // Extract meaningful TECHNICAL keywords from JD only
-  // Skip common English words, focus on tech terms, skills, tools
   const stopWords = new Set([
-    'with','that','this','from','have','will','your','their','they','been','more',
-    'also','into','than','when','what','which','about','after','before','through',
-    'between','would','could','should','shall','must','need','able','work','working',
-    'using','used','use','build','building','built','develop','developing','developed',
+    'a','an','the','and','or','but','nor','so','yet','for','of','in','on','at',
+    'to','by','up','as','is','it','be','do','if','no','not','was','are','has',
+    'had','him','his','her','its','our','out','per','via','vs','any','all','few',
+    'can','may','get','got','let','put','set','run','see','two','one','new',
+    'were','been','have','having','does','doing','did','make','makes',
+    'their','they','them','those','these','then','than','thus',
+    'with','that','this','from','will','your','more','also','into','when',
+    'what','which','about','after','before','through','between','would','could',
+    'should','shall','must','need','able','work','working','using','used','use',
+    'build','building','built','develop','developing','developed',
     'experience','strong','good','knowledge','understanding','familiar','familiarity',
     'team','teams','cross','functional','multiple','large','scale','high','level',
-    'ensure','ensure','support','maintain','implement','implementing','provide',
+    'ensure','support','maintain','implement','implementing','provide',
     'include','including','well','best','practices','ability','skills','required',
-    'preferred','plus','bonus','nice','have','years','year','minimum','least',
+    'preferred','plus','bonus','nice','years','year','minimum','least',
     'environment','production','enterprise','systems','system','application',
     'applications','solution','solutions','platform','platforms','service','services',
-    'data','code','codebase','codebases','feature','features','module','modules',
+    'code','codebase','codebases','feature','features','module','modules',
     'component','components','layer','layers','design','designs','patterns','pattern',
-    'based','driven','oriented','related','focused','across','within','between',
-    'existing','legacy','modern','current','new','next','real','time','end','full',
-    'stack','back','front','side','both','other','each','such','well','known'
+    'based','driven','oriented','related','focused','across','within',
+    'existing','legacy','modern','current','real','time','end','full',
+    'stack','back','front','side','both','other','each','such','known',
+    'ideal','profile','primarily','strengths','secondary','language','languages',
+    'preference','accept','primary','candidate','candidates','doesnt','doesn',
+    'role','roles','position','job','looking','seeking','hire','hiring',
+    'responsibilities','requirement','requirements','although','while','since',
+    'because','therefore','however','development','but',
   ]);
 
-  // Extract technical keywords — minimum 2 chars, alphanumeric with dots/hashes
-  const jdWords = jdText.toLowerCase().match(/[a-z][a-z0-9#.\-+/]{1,}/g) || [];
+  // Min 3 chars — blocks 'of','to','be','or','in','is','go' etc.
+  const jdWords = jdText.toLowerCase().match(/[a-z][a-z0-9#.\-+/]{2,}/g) || [];
   const jdKeywords = [...new Set(jdWords)].filter(w =>
-    w.length >= 2 &&
-    !stopWords.has(w) &&
-    !/^\d+$/.test(w) // not pure numbers
+    w.length >= 3 && !stopWords.has(w) && !/^\d+$/.test(w)
   );
 
-  // Weight technical terms higher (frameworks, tools, languages)
   const techPatterns = [
     /^(aws|gcp|azure|docker|kubernetes|k8s|terraform|jenkins|github|gitlab)$/,
     /^(react|angular|vue|next|nuxt|svelte|jquery|redux|rxjs)$/,
-    /^(java|python|golang|go|rust|scala|kotlin|swift|typescript|javascript)$/,
+    /^(java|python|golang|rust|scala|kotlin|swift|typescript|javascript)$/,
     /\.(net|js|ts|py|java|go|cs)$/,
     /^(sql|nosql|mongodb|postgres|mysql|redis|kafka|rabbitmq|elasticsearch)$/,
     /^(api|rest|graphql|grpc|oauth|jwt|saml|ldap|oidc)$/,
     /^(ci\/cd|devops|mlops|agile|scrum|kanban|tdd|bdd)$/,
     /^(microservice|serverless|lambda|faas|paas|saas|iaas)$/,
-    /\d+\.\d+/, // version numbers like 3.1, 2.0
+    /\d+\.\d+/,
   ];
 
   const resumeLower = resumeText.toLowerCase();
-
-  let matched = 0;
-  let total = 0;
+  let matched = 0, total = 0;
 
   for (const kw of jdKeywords) {
     const isTech = techPatterns.some(p => p.test(kw));
-    const weight = isTech ? 2 : 1; // tech keywords count double
+    const weight = isTech ? 2 : 1;
     total += weight;
-    if (resumeLower.includes(kw)) {
-      matched += weight;
-    }
+    if (resumeLower.includes(kw)) matched += weight;
   }
 
   if (total === 0) return 70;
   const raw = (matched / total) * 100;
-  // Allow range 30-95 so before/after delta is visible
   return Math.min(95, Math.max(30, Math.round(raw)));
 }
 
 // ════════════════════════════════════════════════════════════════════
-// FIX 4: TECH SWAP DETECTION — pure logic, no AI, word-boundary safe
+// TECH SWAP DETECTION — Fixed:
+//   "Angular OR React" in JD → NO swap (both are acceptable, keep existing)
 // ════════════════════════════════════════════════════════════════════
 function detectTechSwaps(resumeText, jdText) {
   const jd = jdText.toLowerCase();
@@ -292,7 +268,7 @@ function detectTechSwaps(resumeText, jdText) {
   const recentHas = (...terms) => textHasAny(recentText, ...terms);
   const swaps = [];
 
-  // CLOUD: Azure → AWS (only if JD wants AWS AND NOT Azure)
+  // CLOUD: Azure → AWS (only if JD wants AWS and does NOT mention Azure as acceptable)
   if (recentHas('azure') && jdWants('aws','amazon web services','ec2','lambda','dynamodb') && !jdWants('azure','microsoft azure')) {
     swaps.push(
       ['Azure API Management (APIM)','AWS API Gateway'],
@@ -384,8 +360,11 @@ function detectTechSwaps(resumeText, jdText) {
     );
   }
 
-  // FRONTEND: Angular → React (check recentHas to avoid old React.js blocking)
-  if (recentHas('angular') && !recentHas('react') && jdWants('react','reactjs','react.js') && !jdWants('angular')) {
+  // FRONTEND: Angular → React
+  // CRITICAL FIX: If JD says "Angular OR React" — do NOT swap. Angular already satisfies the requirement.
+  const jdAllowsBoth = jdWants('angular or react','react or angular','angular/react','react/angular','angular, react','react, angular');
+  if (recentHas('angular') && !recentHas('react') &&
+      jdWants('react','reactjs','react.js') && !jdWants('angular') && !jdAllowsBoth) {
     swaps.push(
       ['Angular 14 to Angular 18','React 17 to React 18'],
       ['Angular 14\u201318','React 17\u201318'],
@@ -394,7 +373,6 @@ function detectTechSwaps(resumeText, jdText) {
       ['Angular 12\u201315','React 16\u201318'],
       ['Angular (11\u201318)','React (16\u201318)'],
       ['Angular 12 front-end','React 17 front-end'],
-      ['Angular 12 front','React 17 front'],
       ['Angular 19','React 19'],['Angular 18','React 18'],
       ['Angular 17','React 18'],['Angular 16','React 18'],
       ['Angular 15','React 18'],['Angular 14','React 18'],
@@ -405,8 +383,9 @@ function detectTechSwaps(resumeText, jdText) {
       ['Karma','Jest'],['Jasmine','React Testing Library'],['Protractor','Cypress']
     );
   }
-  // FRONTEND: React → Angular
-  if (recentHas('react') && !recentHas('angular') && jdWants('angular') && !jdWants('react','reactjs')) {
+  // FRONTEND: React → Angular (only if JD exclusively wants Angular)
+  if (recentHas('react') && !recentHas('angular') &&
+      jdWants('angular') && !jdWants('react','reactjs') && !jdAllowsBoth) {
     swaps.push(
       ['React 17 to React 18','Angular 14 to Angular 18'],
       ['React 18','Angular 18'],['React 17','Angular 14'],['React 16','Angular 12'],
@@ -425,53 +404,52 @@ function detectTechSwaps(resumeText, jdText) {
     );
   }
 
-  // Sort longest first, deduplicate
   swaps.sort((a, b) => b[0].length - a[0].length);
   const seen = new Set();
   return swaps.filter(([f]) => { if (seen.has(f)) return false; seen.add(f); return true; });
 }
 
 // ════════════════════════════════════════════════════════════════════
-// FIX 5: SIMPLIFIED CLAUDE PROMPT — AI only extracts skills + bullets
-//         No insertAfter, no placement, no structural decisions
+// CLAUDE ANALYSIS — Fixed:
+//   1. Removed bad rule blocking Golang from government projects
+//   2. Bullets MUST use exact JD keyword names (Golang not Go, AWS not Amazon)
+//   3. "Angular OR React" → no Angular→React change needed
+//   4. Cleaner, tighter prompt
 // ════════════════════════════════════════════════════════════════════
 async function analyzeWithClaude(resumeText, jdText) {
   const attempt = async () => {
     const message = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 3000,
-      system: `You are a precise resume gap analyzer. Your job is to achieve 92-95% JD match.
+      system: `You are a precise resume gap analyzer. Find ONLY truly missing skills and write realistic bullets.
 
-STEP 1 — EXTRACT: List every skill/tool/technology from the JD.
-STEP 2 — CHECK: For each one, search the ENTIRE resume text. If it exists ANYWHERE — skip it, do NOT add it again.
-STEP 3 — IDENTIFY REAL GAPS: Only skills that are completely absent from the resume.
-STEP 4 — WRITE BULLETS: For each real gap, write a realistic bullet.
+STEP 1 — EXTRACT all skills/tools/technologies explicitly named in the JD.
+STEP 2 — CHECK each against the ENTIRE resume. If it exists anywhere — skip it. Do NOT add things already present.
+STEP 3 — IDENTIFY real gaps: only skills completely absent from the entire resume.
+STEP 4 — WRITE one realistic bullet per real gap.
 
-CRITICAL RULES FOR BULLETS:
-- Each bullet MUST be realistic for the specific project it will go into
-- You will be told which are the recent 2 projects — bullets must fit those projects' domain, tech stack, and cloud provider
-- If project uses Azure — do NOT write AWS bullets for it
-- If project is a government/county system — do NOT add payment processing, Go, or enterprise fintech patterns
-- If project uses Angular — do NOT switch to React unless JD explicitly requires React and project already has React context
-- Match the candidate's existing writing style exactly
-- Bullets must be interview-defensible — a real engineer could explain this in detail
-- Do NOT add a skill the candidate clearly has no background in based on the resume
+BULLET RULES:
+- Use the EXACT technology name from the JD in the bullet text. JD says "Golang" → write "Golang" (not "Go"). JD says "AWS" → write "AWS" (not "Amazon").
+- Each bullet must fit the specific project's domain and existing tech stack
+- If project uses Azure as primary cloud — do NOT write AWS-specific service bullets for it
+- If JD says "Angular OR React" — candidate already satisfies this with Angular. Do NOT flag Angular as missing.
+- Match the candidate's existing bullet style exactly (length, tone, metrics format)
+- Every bullet must be interview-defensible — a real engineer could explain every detail
+- Never add a skill with zero evidence in the resume
 
-RULES FOR DISTRIBUTION:
-- Tag each bullet with "project": "recent1" or "project": "recent2"
-- Distribute bullets across BOTH recent projects based on which fits better contextually
-- Do NOT dump all bullets into one project
-- Balance: if 6 bullets needed → 3 for recent1, 3 for recent2
+DISTRIBUTION RULES:
+- Tag each bullet: "project": "recent1" (most recent) or "project": "recent2"
+- Balance bullets — do NOT put everything in one project
 
-RULES FOR REMOVALS:
-- Only remove bullets that are COMPLETELY irrelevant to this JD
-- Only remove from recent 2 projects
-- Never remove core tech achievements, architecture decisions, or quantified results
+REMOVAL RULES:
+- Only remove bullets completely irrelevant to this specific JD
+- Only remove from the 2 most recent projects
+- Never remove quantified results or core architecture achievements
 
 Return ONLY valid JSON, no markdown.`,
       messages: [{
         role: 'user',
-        content: `Analyze this resume against the JD. Find ONLY the genuinely missing skills and write realistic bullets.
+        content: `Analyze this resume against the JD. Find ONLY genuinely missing skills.
 
 RESUME:
 ${resumeText.slice(0, 6000)}
@@ -480,12 +458,10 @@ JOB DESCRIPTION:
 ${jdText.slice(0, 2000)}
 
 INSTRUCTIONS:
-1. First identify the 2 most recent projects from the resume (name them)
-2. For each JD skill — search the ENTIRE resume text first. Only flag as missing if truly absent.
-3. For each missing skill — write a bullet that fits naturally into one of the 2 recent projects
-4. Tag each bullet with which project it belongs to ("recent1" or "recent2")
-5. Distribute bullets across both projects — do NOT put everything in recent1
-6. Make every bullet realistic for that project's domain and tech stack
+1. Identify the 2 most recent projects/clients from the resume
+2. For each JD skill — search the ENTIRE resume. Only flag as missing if truly absent.
+3. Write one bullet per missing skill. Use EXACT names from JD (e.g., "Golang" not "Go").
+4. Tag each bullet "recent1" or "recent2". Distribute evenly.
 
 Return ONLY this JSON:
 {
@@ -495,20 +471,20 @@ Return ONLY this JSON:
   "missingSkills": [
     {
       "skill": "exact skill name from JD",
-      "bullet": "complete realistic bullet text — no markdown bold — matches candidate writing style",
+      "bullet": "complete realistic bullet — no markdown — matches candidate style",
       "techTerms": ["Term1", "Term2"],
       "category": "frontend|backend|cloud|database|devops|testing|security|other",
-      "project": "recent1 or recent2 — which project this bullet belongs to",
-      "reason": "why this fits this project specifically"
+      "project": "recent1 or recent2",
+      "reason": "why this fits this project"
     }
   ],
   "weakBullets": [
     {
-      "snippet": "first 40 chars of weak bullet from resume",
+      "snippet": "first 40 chars of weak bullet",
       "reason": "why irrelevant to this JD"
     }
   ],
-  "summary": "X missing skills added across 2 projects"
+  "summary": "brief summary of changes"
 }`
       }]
     });
@@ -517,7 +493,6 @@ Return ONLY this JSON:
     return JSON.parse(cleaned.slice(cleaned.indexOf('{'), cleaned.lastIndexOf('}') + 1));
   };
 
-  // FIX 6: RETRY with fallback
   for (let i = 0; i < 3; i++) {
     try {
       const result = await attempt();
@@ -525,21 +500,23 @@ Return ONLY this JSON:
       return result;
     } catch (e) {
       console.error(`Claude attempt ${i+1} failed:`, e.message);
-      if (i === 2) return { missingSkills: [], weakBullets: [], roleType: 'full_stack', summary: '' };
+      if (i === 2) return { missingSkills: [], weakBullets: [], roleType: 'full_stack', summary: '', recentProject1: '', recentProject2: '' };
     }
   }
 }
 
 // ════════════════════════════════════════════════════════════════════
-// FIX 7: VALIDATION LAYER — validate and repair AI output
+// VALIDATION LAYER
 // ════════════════════════════════════════════════════════════════════
 function validateAIOutput(aiOutput) {
   if (!aiOutput || typeof aiOutput !== 'object') {
-    return { missingSkills: [], weakBullets: [], roleType: 'full_stack', summary: '' };
+    return { missingSkills: [], weakBullets: [], roleType: 'full_stack', summary: '', recentProject1: '', recentProject2: '' };
   }
   return {
     roleType: aiOutput.roleType || 'full_stack',
     summary: aiOutput.summary || '',
+    recentProject1: aiOutput.recentProject1 || '',
+    recentProject2: aiOutput.recentProject2 || '',
     missingSkills: (aiOutput.missingSkills || []).filter(s =>
       s && s.skill && s.bullet && s.bullet.length > 20 && s.bullet.length < 500
     ),
@@ -550,32 +527,23 @@ function validateAIOutput(aiOutput) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// FIX 8: CODE-DRIVEN PLACEMENT — backend decides where bullets go
-//         No more insertAfter from AI — fuzzy match finds best position
+// CODE-DRIVEN PLACEMENT
 // ════════════════════════════════════════════════════════════════════
 function decidePlacement(skill, paras, olderBoundary, resumeText, recentProject1Name, recentProject2Name) {
   const cat = (skill.category || '').toLowerCase();
   const skillLower = (skill.skill || '').toLowerCase();
   const bulletLower = (skill.bullet || '').toLowerCase();
-  const projectTag = (skill.project || 'recent1').toLowerCase(); // 'recent1' or 'recent2'
-
-  // ── Find boundaries of each recent project ──────────────────────────────────
-  // Project 1 = most recent (starts at first client marker, ends at second client marker)
-  // Project 2 = second most recent (starts at second client marker, ends at older boundary)
+  const projectTag = (skill.project || 'recent1').toLowerCase();
 
   const skipMarkers = ['Technical Skills', 'Professional Summary', 'Summary:', 'Technical Skills:'];
-
-  // Find project start indices in paras
   let p1Start = -1, p2Start = -1;
   const clientMarkers = [];
 
   for (const para of paras) {
     const t = para.text;
-    // A client header line — "Client:" or contains client name
     if ((t.startsWith('Client:') || t.includes('Client :') || t.includes('Client:')) && para.index < olderBoundary) {
       clientMarkers.push(para.index);
     }
-    // Also detect by project names Claude identified
     if (recentProject1Name && t.includes(recentProject1Name) && para.index < olderBoundary) {
       if (p1Start === -1) p1Start = para.index;
     }
@@ -584,42 +552,30 @@ function decidePlacement(skill, paras, olderBoundary, resumeText, recentProject1
     }
   }
 
-  // If we found project names, use them; otherwise fall back to client markers
   if (p1Start === -1 && clientMarkers.length > 0) p1Start = clientMarkers[0];
   if (p2Start === -1 && clientMarkers.length > 1) p2Start = clientMarkers[1];
 
-  // Determine which project's paragraphs to use
   let projectParas;
   if (projectTag === 'recent2' && p2Start > 0) {
-    // Use paragraphs from project 2 start to older boundary
     projectParas = paras.filter(p =>
-      p.index >= p2Start &&
-      p.index < olderBoundary &&
-      p.text.length > 40 &&
-      !skipMarkers.some(m => p.text.includes(m))
+      p.index >= p2Start && p.index < olderBoundary &&
+      p.text.length > 40 && !skipMarkers.some(m => p.text.includes(m))
     );
   } else {
-    // Use paragraphs from project 1 start to project 2 start (or older boundary if no p2)
     const p1End = p2Start > 0 ? p2Start : olderBoundary;
     projectParas = paras.filter(p =>
-      p.index >= p1Start &&
-      p.index < p1End &&
-      p.text.length > 40 &&
-      !skipMarkers.some(m => p.text.includes(m))
+      p.index >= p1Start && p.index < p1End &&
+      p.text.length > 40 && !skipMarkers.some(m => p.text.includes(m))
     );
-    // If no p1 paras found, fall back to all experience paras
     if (projectParas.length === 0) {
       const experienceStart = p1Start > 0 ? p1Start : (clientMarkers[0] || 0);
       projectParas = paras.filter(p =>
-        p.index >= experienceStart &&
-        p.index < olderBoundary &&
-        p.text.length > 40 &&
-        !skipMarkers.some(m => p.text.includes(m))
+        p.index >= experienceStart && p.index < olderBoundary &&
+        p.text.length > 40 && !skipMarkers.some(m => p.text.includes(m))
       );
     }
   }
 
-  // ── Find best paragraph within the target project ──────────────────────────
   const categoryKeywords = {
     frontend: ['angular','react','vue','typescript','html','css','ui','frontend','interface','component','blazor'],
     backend: ['api','service','microservice','rest','asp.net','entity framework','linq','mvc','minimal api'],
@@ -634,18 +590,18 @@ function decidePlacement(skill, paras, olderBoundary, resumeText, recentProject1
   const keywords = categoryKeywords[cat] || categoryKeywords.other;
   const allKeywords = [...keywords, skillLower, ...bulletLower.split(' ').filter(w => w.length > 4)];
 
-  // Find best matching paragraph within target project
   for (const kw of allKeywords) {
     const match = projectParas.find(p => p.text.toLowerCase().includes(kw));
     if (match) return match;
   }
 
-  // Fallback: last bullet of target project
   return projectParas[projectParas.length - 1] || null;
 }
 
 // ════════════════════════════════════════════════════════════════════
-// MAIN DOCX PROCESSOR
+// MAIN DOCX PROCESSOR — Fixed:
+//   addedBullets now stores FULL bullet text (not 60-char truncated)
+//   so score recalculation uses complete keyword-rich text
 // ════════════════════════════════════════════════════════════════════
 function applyToDocx(docxBuffer, analysis, resumeText, detectedSwaps) {
   const zip = new AdmZip(docxBuffer);
@@ -663,11 +619,11 @@ function applyToDocx(docxBuffer, analysis, resumeText, detectedSwaps) {
     const newBefore = applyTextSwap(before, from, to);
     if (newBefore !== before) {
       xml = newBefore + older;
-      swapsApplied.push(`${from.slice(0,35)} → ${to.slice(0,35)}`);
+      swapsApplied.push(`${from.slice(0,35)} \u2192 ${to.slice(0,35)}`);
     }
   }
 
-  // 2. Remove weak bullets before older boundary
+  // 2. Remove weak bullets
   for (const weak of (analysis.weakBullets || [])) {
     if (!weak.snippet || weak.snippet.length < 10) continue;
     const newXml = removeParagraph(xml, weak.snippet, olderBoundary);
@@ -677,15 +633,17 @@ function applyToDocx(docxBuffer, analysis, resumeText, detectedSwaps) {
     }
   }
 
-  // 3. Add missing skill bullets — code decides placement (no insertAfter from AI)
+  // 3. Add missing skill bullets
   let currentParas = extractParagraphs(xml);
   const addedSkills = new Set();
 
   for (const skill of (analysis.missingSkills || [])) {
     if (!skill.bullet || addedSkills.has(skill.skill)) continue;
 
-    // Use code-driven placement
-    const targetPara = decidePlacement(skill, currentParas, olderBoundary, resumeText, analysis.recentProject1 || '', analysis.recentProject2 || '');
+    const targetPara = decidePlacement(
+      skill, currentParas, olderBoundary, resumeText,
+      analysis.recentProject1 || '', analysis.recentProject2 || ''
+    );
     if (!targetPara) {
       console.log(`No placement found for: ${skill.skill}`);
       continue;
@@ -694,9 +652,9 @@ function applyToDocx(docxBuffer, analysis, resumeText, detectedSwaps) {
     const newBulletXml = buildBulletPara(skill.bullet, skill.techTerms || [], targetPara.xml);
     const insertPos = targetPara.index + targetPara.xml.length;
     xml = xml.slice(0, insertPos) + newBulletXml + xml.slice(insertPos);
-    addedBullets.push(skill.bullet.slice(0, 60));
+    addedBullets.push(skill.bullet); // FULL text — critical for score accuracy
     addedSkills.add(skill.skill);
-    currentParas = extractParagraphs(xml); // refresh after each insert
+    currentParas = extractParagraphs(xml);
 
     console.log(`Added [${skill.category}]: ${skill.skill}`);
   }
@@ -736,6 +694,7 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 app.post('/api/auth/logout', authMiddleware, (req, res) => res.json({ message: 'Logged out' }));
+
 app.get('/api/auth/me', authMiddleware, (req, res) => {
   const user = db.users[req.user.email];
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -747,23 +706,23 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
   try {
     if (!req.file) return res.status(400).json({ error: 'Resume file is required' });
     const { jobDescription } = req.body;
-    if (!jobDescription || jobDescription.trim().length < 50)
-      return res.status(400).json({ error: 'Job description must be at least 50 characters' });
+    if (!jobDescription || jobDescription.trim().length < 20)
+      return res.status(400).json({ error: 'Job description is required' });
 
     const jdText = jobDescription.trim();
     const ext = path.extname(req.file.originalname).toLowerCase();
     const resumeText = await extractText(req.file.buffer, req.file.originalname);
 
-    // Step 1: Code detects tech swaps (pure logic, no AI, word-boundary safe)
+    // Step 1: Detect tech swaps (pure code, no AI)
     const detectedSwaps = detectTechSwaps(resumeText, jdText);
 
-    // Step 2: Claude finds missing skills and weak bullets only (no placement, no swaps)
+    // Step 2: Claude finds gaps + writes bullets
     const rawAnalysis = await analyzeWithClaude(resumeText, jdText);
 
-    // Step 3: Validate and repair AI output
+    // Step 3: Validate AI output
     const analysis = validateAIOutput(rawAnalysis);
 
-    // Step 4: Code-based match scores
+    // Step 4: Score BEFORE
     const scoreBefore = calculateMatchScore(resumeText, jdText);
 
     // Step 5: Apply to DOCX
@@ -776,55 +735,56 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
         docxBase64 = result.buffer.toString('base64');
         swapsApplied = result.swapsApplied;
         removedBullets = result.removedBullets;
-        addedBullets = result.addedBullets;
+        addedBullets = result.addedBullets; // full bullet text
         console.log(`Done: ${swapsApplied.length} swaps, ${removedBullets.length} removed, ${addedBullets.length} added`);
-      } catch (err) { console.error('DOCX error:', err.message); }
+      } catch (err) {
+        console.error('DOCX processing error:', err.message);
+        // Don't fail the whole request — still return text analysis
+      }
     }
 
-    // Step 6: Recalculate score after on the modified resume text
-    // Use full bullet text from analysis (not truncated addedBullets log strings)
-    const addedBulletsFullText = (analysis.missingSkills || [])
-      .filter(s => s && s.bullet)
-      .map(s => s.bullet)
-      .join(' ');
-    // Extract swap targets — swapsApplied format is "from → to", grab "to" side
+    // Step 6: Score AFTER — use full bullet text for accurate keyword measurement
+    const addedBulletsText = addedBullets.join(' ');
+    // Extract swap targets (format: "Azure DevOps → AWS CodePipeline")
     const swapTargetsText = swapsApplied
-      .map(s => {
-        const parts = s.split('→');
-        return parts.length > 1 ? parts[1].trim() : '';
-      })
+      .map(s => { const parts = s.split(' \u2192 '); return parts.length > 1 ? parts[1].trim() : ''; })
       .join(' ');
-    const updatedResumeText = resumeText + ' ' + addedBulletsFullText + ' ' + swapTargetsText;
+    const updatedResumeText = resumeText + ' ' + addedBulletsText + ' ' + swapTargetsText;
     const scoreAfter = calculateMatchScore(updatedResumeText, jdText);
 
     const changes = [
       ...swapsApplied.map(s => ({ type: 'modified', description: `Tech updated: ${s}` })),
       ...removedBullets.map(r => ({ type: 'removed', description: `Removed: ${r}` })),
-      ...addedBullets.map(a => ({ type: 'added', description: `Added: ${a}` })),
+      ...addedBullets.map(a => ({ type: 'added', description: `Added: ${a.slice(0, 80)}` })),
     ];
-    if (changes.length === 0) changes.push({ type: 'added', description: 'Resume analyzed — already well matched' });
+    if (changes.length === 0) {
+      changes.push({ type: 'info', description: 'Resume already well matched to this JD' });
+    }
 
-    const entry = {
+    // Save to history
+    if (!db.history[req.user.userId]) db.history[req.user.userId] = [];
+    db.history[req.user.userId].unshift({
       id: `opt_${Date.now()}`,
       jdSnippet: jdText.slice(0, 200),
       matchScore: scoreAfter,
+      matchScoreBefore: scoreBefore,
       keywordsAdded: addedBullets.length + swapsApplied.length,
       createdAt: new Date().toISOString(),
-      resumeOutput: resumeText
-    };
-    if (!db.history[req.user.userId]) db.history[req.user.userId] = [];
-    db.history[req.user.userId].unshift(entry);
+    });
     if (db.history[req.user.userId].length > 20) db.history[req.user.userId].pop();
 
     res.json({
       success: true,
       docxBase64,
+      // FIXED: return updatedResumeText so preview actually shows changes
       optimizedResume: updatedResumeText,
       matchScore: scoreAfter,
       matchScoreBefore: scoreBefore,
       changes,
       keywordsAdded: addedBullets.length + swapsApplied.length,
       bulletsEnhanced: addedBullets.length,
+      stackSwaps: swapsApplied.length,
+      pointsTrimmed: removedBullets.length,
       sectionsImproved: Math.min(swapsApplied.length + addedBullets.length, 6),
       swapsApplied,
       removedCount: removedBullets.length,
@@ -835,13 +795,13 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
 
   } catch (err) {
     console.error('Optimize error:', err);
-    if (err.status === 529) return res.status(503).json({ error: 'AI overloaded. Try again.' });
+    if (err.status === 529) return res.status(503).json({ error: 'AI is overloaded. Please try again in a moment.' });
     res.status(500).json({ error: 'Optimization failed: ' + err.message });
   }
 });
 
 app.get('/api/resume/history', authMiddleware, (req, res) => {
-  const history = (db.history[req.user.userId] || []).map(({ resumeOutput, ...h }) => h);
+  const history = db.history[req.user.userId] || [];
   res.json({ history });
 });
 
