@@ -220,13 +220,67 @@ function removeParagraph(xml, findText, boundary) {
 // FIX 3: CODE-BASED MATCH SCORE (not AI guess)
 // ════════════════════════════════════════════════════════════════════
 function calculateMatchScore(resumeText, jdText) {
-  const jdWords = jdText.toLowerCase().match(/\b[a-z][a-z0-9#.\-+]{2,}\b/g) || [];
-  const jdUnique = [...new Set(jdWords)].filter(w =>
-    w.length > 3 && !['with','that','this','from','have','will','your','their','they','been','more','also','into','than','when','what','which','about','after','before','through','between'].includes(w)
+  // Extract meaningful TECHNICAL keywords from JD only
+  // Skip common English words, focus on tech terms, skills, tools
+  const stopWords = new Set([
+    'with','that','this','from','have','will','your','their','they','been','more',
+    'also','into','than','when','what','which','about','after','before','through',
+    'between','would','could','should','shall','must','need','able','work','working',
+    'using','used','use','build','building','built','develop','developing','developed',
+    'experience','strong','good','knowledge','understanding','familiar','familiarity',
+    'team','teams','cross','functional','multiple','large','scale','high','level',
+    'ensure','ensure','support','maintain','implement','implementing','provide',
+    'include','including','well','best','practices','ability','skills','required',
+    'preferred','plus','bonus','nice','have','years','year','minimum','least',
+    'environment','production','enterprise','systems','system','application',
+    'applications','solution','solutions','platform','platforms','service','services',
+    'data','code','codebase','codebases','feature','features','module','modules',
+    'component','components','layer','layers','design','designs','patterns','pattern',
+    'based','driven','oriented','related','focused','across','within','between',
+    'existing','legacy','modern','current','new','next','real','time','end','full',
+    'stack','back','front','side','both','other','each','such','well','known'
+  ]);
+
+  // Extract technical keywords — minimum 2 chars, alphanumeric with dots/hashes
+  const jdWords = jdText.toLowerCase().match(/[a-z][a-z0-9#.\-+/]{1,}/g) || [];
+  const jdKeywords = [...new Set(jdWords)].filter(w =>
+    w.length >= 2 &&
+    !stopWords.has(w) &&
+    !/^\d+$/.test(w) // not pure numbers
   );
+
+  // Weight technical terms higher (frameworks, tools, languages)
+  const techPatterns = [
+    /^(aws|gcp|azure|docker|kubernetes|k8s|terraform|jenkins|github|gitlab)$/,
+    /^(react|angular|vue|next|nuxt|svelte|jquery|redux|rxjs)$/,
+    /^(java|python|golang|go|rust|scala|kotlin|swift|typescript|javascript)$/,
+    /\.(net|js|ts|py|java|go|cs)$/,
+    /^(sql|nosql|mongodb|postgres|mysql|redis|kafka|rabbitmq|elasticsearch)$/,
+    /^(api|rest|graphql|grpc|oauth|jwt|saml|ldap|oidc)$/,
+    /^(ci\/cd|devops|mlops|agile|scrum|kanban|tdd|bdd)$/,
+    /^(microservice|serverless|lambda|faas|paas|saas|iaas)$/,
+    /\d+\.\d+/, // version numbers like 3.1, 2.0
+  ];
+
   const resumeLower = resumeText.toLowerCase();
-  const matched = jdUnique.filter(w => resumeLower.includes(w));
-  return Math.min(95, Math.round((matched.length / Math.max(jdUnique.length, 1)) * 100));
+
+  let matched = 0;
+  let total = 0;
+
+  for (const kw of jdKeywords) {
+    const isTech = techPatterns.some(p => p.test(kw));
+    const weight = isTech ? 2 : 1; // tech keywords count double
+    total += weight;
+    if (resumeLower.includes(kw)) {
+      matched += weight;
+    }
+  }
+
+  if (total === 0) return 70;
+  const raw = (matched / total) * 100;
+  // Scale: raw score tends to be high due to common words matching
+  // A raw score of 70%+ of weighted tech keywords = very good match
+  return Math.min(95, Math.max(50, Math.round(raw)));
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -728,8 +782,11 @@ app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single(
       } catch (err) { console.error('DOCX error:', err.message); }
     }
 
-    // Step 6: Code-based score after
-    const scoreAfter = Math.min(95, scoreBefore + swapsApplied.length * 2 + addedBullets.length * 3);
+    // Step 6: Recalculate score after on the modified resume text
+    // Build updated resume text by incorporating added bullets
+    const addedBulletsText = addedBullets.join(' ');
+    const updatedResumeText = resumeText + ' ' + addedBulletsText + ' ' + swapsApplied.map(s => s.split('→')[1] || '').join(' ');
+    const scoreAfter = calculateMatchScore(updatedResumeText, jdText);
 
     const changes = [
       ...swapsApplied.map(s => ({ type: 'modified', description: `Tech updated: ${s}` })),
