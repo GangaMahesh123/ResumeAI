@@ -387,58 +387,75 @@ async function analyzeWithClaude(resumeText, jdText) {
     const message = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 3000,
-      system: `You are a resume gap analyzer. Your ONLY job:
-1. Extract every skill/tool/technology from the JD
-2. Check which ones are MISSING from the resume
-3. For each missing skill — write a natural bullet point the candidate could add
-4. Identify weak/repeated/irrelevant bullets to remove
+      system: `You are a precise resume gap analyzer. Your job is to achieve 92-95% JD match.
 
-STRICT RULES:
-- Do NOT suggest technology swaps (cloud/frontend/framework changes — handled by system)
-- Do NOT include insertAfter — the system handles placement automatically
-- Cover ALL missing JD skills — be thorough, target 92-95% match
-- New bullets must match the candidate's writing style and seniority
-- Bullets must be realistic — based on candidate's existing background
-- Only suggest removals from recent 2 projects
-- Never remove core achievements or primary tech stack bullets
-- Return ONLY valid JSON, no markdown`,
+STEP 1 — EXTRACT: List every skill/tool/technology from the JD.
+STEP 2 — CHECK: For each one, search the ENTIRE resume text. If it exists ANYWHERE — skip it, do NOT add it again.
+STEP 3 — IDENTIFY REAL GAPS: Only skills that are completely absent from the resume.
+STEP 4 — WRITE BULLETS: For each real gap, write a realistic bullet.
+
+CRITICAL RULES FOR BULLETS:
+- Each bullet MUST be realistic for the specific project it will go into
+- You will be told which are the recent 2 projects — bullets must fit those projects' domain, tech stack, and cloud provider
+- If project uses Azure — do NOT write AWS bullets for it
+- If project is a government/county system — do NOT add payment processing, Go, or enterprise fintech patterns
+- If project uses Angular — do NOT switch to React unless JD explicitly requires React and project already has React context
+- Match the candidate's existing writing style exactly
+- Bullets must be interview-defensible — a real engineer could explain this in detail
+- Do NOT add a skill the candidate clearly has no background in based on the resume
+
+RULES FOR DISTRIBUTION:
+- Tag each bullet with "project": "recent1" or "project": "recent2"
+- Distribute bullets across BOTH recent projects based on which fits better contextually
+- Do NOT dump all bullets into one project
+- Balance: if 6 bullets needed → 3 for recent1, 3 for recent2
+
+RULES FOR REMOVALS:
+- Only remove bullets that are COMPLETELY irrelevant to this JD
+- Only remove from recent 2 projects
+- Never remove core tech achievements, architecture decisions, or quantified results
+
+Return ONLY valid JSON, no markdown.`,
       messages: [{
         role: 'user',
-        content: `You are a resume gap analyzer. Go through EVERY skill in the JD one by one and check if it exists in the resume.
+        content: `Analyze this resume against the JD. Find ONLY the genuinely missing skills and write realistic bullets.
 
 RESUME:
-${resumeText.slice(0, 5000)}
+${resumeText.slice(0, 6000)}
 
 JOB DESCRIPTION:
 ${jdText.slice(0, 2000)}
 
 INSTRUCTIONS:
-1. Read every single skill/tool/technology mentioned in the JD
-2. Search for each one in the resume text
-3. If NOT found → add it to missingSkills with a natural bullet
-4. Be exhaustive — check ALL skills including minor ones like build tools, linting tools, routing libraries
-5. Cover frontend skills (routing, forms, build tools, CSS frameworks), backend skills, cloud skills, security skills
-6. Target: every important JD keyword must appear in the output resume
-7. Removals: only remove truly irrelevant bullets — keep page count balanced
+1. First identify the 2 most recent projects from the resume (name them)
+2. For each JD skill — search the ENTIRE resume text first. Only flag as missing if truly absent.
+3. For each missing skill — write a bullet that fits naturally into one of the 2 recent projects
+4. Tag each bullet with which project it belongs to ("recent1" or "recent2")
+5. Distribute bullets across both projects — do NOT put everything in recent1
+6. Make every bullet realistic for that project's domain and tech stack
 
 Return ONLY this JSON:
 {
   "roleType": "full_stack|backend|frontend|devops|data_engineer|ml_engineer|other",
+  "recentProject1": "name of most recent project/client",
+  "recentProject2": "name of second most recent project/client",
   "missingSkills": [
     {
       "skill": "exact skill name from JD",
-      "bullet": "complete bullet text matching candidate writing style — no markdown bold — realistic",
-      "techTerms": ["Term1","Term2"],
-      "category": "frontend|backend|cloud|database|devops|testing|security|other"
+      "bullet": "complete realistic bullet text — no markdown bold — matches candidate writing style",
+      "techTerms": ["Term1", "Term2"],
+      "category": "frontend|backend|cloud|database|devops|testing|security|other",
+      "project": "recent1 or recent2 — which project this bullet belongs to",
+      "reason": "why this fits this project specifically"
     }
   ],
   "weakBullets": [
     {
       "snippet": "first 40 chars of weak bullet from resume",
-      "reason": "why irrelevant to this specific JD"
+      "reason": "why irrelevant to this JD"
     }
   ],
-  "summary": "X missing skills found, Y weak bullets identified"
+  "summary": "X missing skills added across 2 projects"
 }`
       }]
     });
@@ -483,46 +500,80 @@ function validateAIOutput(aiOutput) {
 // FIX 8: CODE-DRIVEN PLACEMENT — backend decides where bullets go
 //         No more insertAfter from AI — fuzzy match finds best position
 // ════════════════════════════════════════════════════════════════════
-function decidePlacement(skill, paras, olderBoundary, resumeText) {
+function decidePlacement(skill, paras, olderBoundary, resumeText, recentProject1Name, recentProject2Name) {
   const cat = (skill.category || '').toLowerCase();
   const skillLower = (skill.skill || '').toLowerCase();
   const bulletLower = (skill.bullet || '').toLowerCase();
+  const projectTag = (skill.project || 'recent1').toLowerCase(); // 'recent1' or 'recent2'
 
-  // CRITICAL: Only place bullets inside EXPERIENCE sections (not Summary, not Skills table)
-  // Find the start of Professional Experience in the XML
-  // Experience starts after "Professional Experience" or first "Client:" marker
-  const experienceMarkers = ['Professional Experience', 'Client:', 'County of San Bernardino', 'Elevance'];
-  const summaryEndMarkers = ['Technical Skills', 'Professional Experience', 'Client:'];
+  // ── Find boundaries of each recent project ──────────────────────────────────
+  // Project 1 = most recent (starts at first client marker, ends at second client marker)
+  // Project 2 = second most recent (starts at second client marker, ends at older boundary)
 
-  // Find where experience section starts in paras
-  let experienceStart = 0;
+  const skipMarkers = ['Technical Skills', 'Professional Summary', 'Summary:', 'Technical Skills:'];
+
+  // Find project start indices in paras
+  let p1Start = -1, p2Start = -1;
+  const clientMarkers = [];
+
   for (const para of paras) {
     const t = para.text;
-    if (experienceMarkers.some(m => t.includes(m))) {
-      experienceStart = para.index;
-      break;
+    // A client header line — "Client:" or contains client name
+    if ((t.startsWith('Client:') || t.includes('Client :') || t.includes('Client:')) && para.index < olderBoundary) {
+      clientMarkers.push(para.index);
+    }
+    // Also detect by project names Claude identified
+    if (recentProject1Name && t.includes(recentProject1Name) && para.index < olderBoundary) {
+      if (p1Start === -1) p1Start = para.index;
+    }
+    if (recentProject2Name && t.includes(recentProject2Name) && para.index < olderBoundary) {
+      if (p2Start === -1) p2Start = para.index;
     }
   }
 
-  // Only use paragraphs that are:
-  // 1. After experience section starts
-  // 2. Before older client boundary
-  // 3. Long enough to be a bullet (not headers)
-  const experienceParas = paras.filter(p =>
-    p.index >= experienceStart &&
-    p.index < olderBoundary &&
-    p.text.length > 40 &&
-    !summaryEndMarkers.some(m => p.text.includes(m))
-  );
+  // If we found project names, use them; otherwise fall back to client markers
+  if (p1Start === -1 && clientMarkers.length > 0) p1Start = clientMarkers[0];
+  if (p2Start === -1 && clientMarkers.length > 1) p2Start = clientMarkers[1];
 
-  // Try to find a contextually relevant paragraph based on category
+  // Determine which project's paragraphs to use
+  let projectParas;
+  if (projectTag === 'recent2' && p2Start > 0) {
+    // Use paragraphs from project 2 start to older boundary
+    projectParas = paras.filter(p =>
+      p.index >= p2Start &&
+      p.index < olderBoundary &&
+      p.text.length > 40 &&
+      !skipMarkers.some(m => p.text.includes(m))
+    );
+  } else {
+    // Use paragraphs from project 1 start to project 2 start (or older boundary if no p2)
+    const p1End = p2Start > 0 ? p2Start : olderBoundary;
+    projectParas = paras.filter(p =>
+      p.index >= p1Start &&
+      p.index < p1End &&
+      p.text.length > 40 &&
+      !skipMarkers.some(m => p.text.includes(m))
+    );
+    // If no p1 paras found, fall back to all experience paras
+    if (projectParas.length === 0) {
+      const experienceStart = p1Start > 0 ? p1Start : (clientMarkers[0] || 0);
+      projectParas = paras.filter(p =>
+        p.index >= experienceStart &&
+        p.index < olderBoundary &&
+        p.text.length > 40 &&
+        !skipMarkers.some(m => p.text.includes(m))
+      );
+    }
+  }
+
+  // ── Find best paragraph within the target project ──────────────────────────
   const categoryKeywords = {
     frontend: ['angular','react','vue','typescript','html','css','ui','frontend','interface','component','blazor'],
     backend: ['api','service','microservice','rest','asp.net','entity framework','linq','mvc','minimal api'],
     cloud: ['azure','aws','gcp','cloud','deploy','kubernetes','docker','container','app service'],
     database: ['sql','database','postgresql','mongodb','cosmos','redis','query','stored procedure'],
     devops: ['ci/cd','pipeline','jenkins','github actions','devops','terraform','bicep','iac','helm'],
-    testing: ['test','xunit','jest','karma','jasmine','unit test','integration test','selenium'],
+    testing: ['test','xunit','jest','karma','jasmine','unit test','integration test','selenium','automation'],
     security: ['oauth','jwt','auth','security','rbac','ad b2c','cognito','key vault','tls'],
     other: []
   };
@@ -530,14 +581,14 @@ function decidePlacement(skill, paras, olderBoundary, resumeText) {
   const keywords = categoryKeywords[cat] || categoryKeywords.other;
   const allKeywords = [...keywords, skillLower, ...bulletLower.split(' ').filter(w => w.length > 4)];
 
-  // Find best matching paragraph in experience sections only
+  // Find best matching paragraph within target project
   for (const kw of allKeywords) {
-    const match = experienceParas.find(p => p.text.toLowerCase().includes(kw));
+    const match = projectParas.find(p => p.text.toLowerCase().includes(kw));
     if (match) return match;
   }
 
-  // Fallback: last bullet in most recent project (end of experienceParas)
-  return experienceParas[experienceParas.length - 1] || null;
+  // Fallback: last bullet of target project
+  return projectParas[projectParas.length - 1] || null;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -581,7 +632,7 @@ function applyToDocx(docxBuffer, analysis, resumeText, detectedSwaps) {
     if (!skill.bullet || addedSkills.has(skill.skill)) continue;
 
     // Use code-driven placement
-    const targetPara = decidePlacement(skill, currentParas, olderBoundary, resumeText);
+    const targetPara = decidePlacement(skill, currentParas, olderBoundary, resumeText, analysis.recentProject1 || '', analysis.recentProject2 || '');
     if (!targetPara) {
       console.log(`No placement found for: ${skill.skill}`);
       continue;
