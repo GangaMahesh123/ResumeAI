@@ -12,12 +12,12 @@ const path = require('path');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 
-const config = require('./lib/config');
-const { Store } = require('./lib/store');
-const { createAnthropicProvider, AIError } = require('./lib/ai');
-const { tailor, PipelineError, toDocx, mergeSettings } = require('./lib/tailor');
-const { loadDocx, slug } = require('./lib/resumeModel');
-const render = require('./lib/render');
+const config = require('./config');
+const { Store } = require('./store');
+const { createAnthropicProvider, AIError } = require('./ai');
+const { tailor, PipelineError, toDocx, mergeSettings } = require('./tailor');
+const { loadDocx, slug } = require('./resumeModel');
+const render = require('./render');
 
 function createApp({ provider = createAnthropicProvider(), store = new Store(), log = console } = {}) {
   const app = express();
