@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ResumeAI — Intelligent Resume Optimizer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0b0d14;--panel:#141824;--panel2:#1a1f2e;--line:#262c3d;--text:#e7eaf2;--muted:#8b93a8;
+  --accent:#19c6d4;--accent-ink:#04171a;--good:#3ecf8e;--warn:#f5b84a;--bad:#f2667a;--new:#16303a;
+  --radius:14px;--mono:'JetBrains Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 'DM Sans',system-ui,sans-serif}
+a{color:var(--accent)}
+.wrap{max-width:1180px;margin:0 auto;padding:24px 16px 80px}
+header.top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:24px}
+.brand{font-weight:700;font-size:20px;letter-spacing:-.01em}.brand span{color:var(--accent)}
+.muted{color:var(--muted)}.small{font-size:13px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:20px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+@media(max-width:860px){.grid2,.grid4{grid-template-columns:1fr}}
+h2{font-size:16px;margin:0 0 12px;font-weight:600}
+h3{font-size:14px;margin:18px 0 8px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+label{display:block;font-size:13px;color:var(--muted);margin:10px 0 6px}
+input[type=text],input[type=email],input[type=password],select,textarea{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font:inherit}
+textarea{min-height:220px;resize:vertical}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+button{font:inherit;cursor:pointer;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--text);padding:9px 14px}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent;font-weight:700}
+button:disabled{opacity:.5;cursor:not-allowed}
+.drop{border:1.5px dashed var(--line);border-radius:12px;padding:26px;text-align:center;cursor:pointer;background:var(--panel2)}
+.drop.over{border-color:var(--accent)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.toggles{display:grid;grid-template-columns:repeat(2,1fr);gap:6px 16px}
+.toggles label{display:flex;gap:8px;align-items:center;margin:0;color:var(--text);font-size:14px}
+details summary{cursor:pointer;color:var(--muted);font-size:14px;margin-top:12px}
+.stat{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px}
+.stat .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.stat .v{font-size:26px;font-weight:700;font-family:var(--mono)}
+.stat .d{font-size:12px;color:var(--muted)}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;border:1px solid var(--line);background:var(--panel2)}
+.pill.good{color:var(--good);border-color:#1f5c43}.pill.warn{color:var(--warn);border-color:#6b5320}.pill.bad{color:var(--bad);border-color:#6b2532}
+ul.list{margin:6px 0 0;padding-left:18px}ul.list li{margin:3px 0}
+.bullets li{margin:4px 0;padding:3px 6px;border-radius:6px}
+.bullets li.new{background:var(--new)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:500}
+.tabs{display:flex;gap:6px;margin:18px 0 12px;flex-wrap:wrap}
+.tabs button.on{border-color:var(--accent);color:var(--accent)}
+.hidden{display:none!important}
+.alert{border-radius:12px;padding:12px 14px;margin:12px 0;border:1px solid}
+.alert.err{background:#2a1218;border-color:#6b2532;color:#ffc7cf}
+.alert.ok{background:#0f2a20;border-color:#1f5c43;color:#bff0d8}
+.spinner{width:16px;height:16px;border:2px solid var(--accent-ink);border-top-color:transparent;border-radius:50%;display:inline-block;animation:sp 1s linear infinite;vertical-align:-3px;margin-right:8px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.lock{color:var(--muted)}
+.auth{max-width:420px;margin:60px auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">Resume<span>AI</span> <span class="muted small">V2 · JD-specific resume tailoring</span></div>
+    <div class="row" id="userBox"></div>
+  </header>
+
+  <!-- AUTH -->
+  <section id="authView" class="auth panel hidden">
+    <div class="tabs"><button id="tabLogin" class="on">Sign in</button><button id="tabRegister">Create account</button></div>
+    <form id="authForm">
+      <div id="nameField" class="hidden"><label for="name">Name</label><input id="name" type="text" autocomplete="name"></div>
+      <label for="email">Email</label><input id="email" type="email" required autocomplete="email">
+      <label for="password">Password</label><input id="password" type="password" required minlength="8" autocomplete="current-password">
+      <div style="margin-top:16px"><button class="primary" type="submit" id="authBtn">Sign in</button></div>
+      <div id="authMsg"></div>
+    </form>
+  </section>
+
+  <!-- APP -->
+  <section id="appView" class="hidden">
+    <div class="grid2">
+      <div class="panel">
+        <h2>1 · Master resume</h2>
+        <div class="drop" id="drop" tabindex="0" role="button" aria-label="Upload resume">
+          <div id="dropText"><strong>Drop resume here</strong> or click to browse<br><span class="muted small">DOCX (best), PDF, DOC or TXT · max 5 MB</span></div>
+          <input id="file" type="file" accept=".docx,.pdf,.doc,.txt" class="hidden">
+        </div>
+        <label for="candidate">Candidate profile</label>
+        <select id="candidate"><option value="">Auto-detect from resume name</option></select>
+        <label for="domain">Domain</label>
+        <select id="domain">
+          <option value="">Auto-detect (.NET / GenAI / AI-ML / Hybrid)</option>
+          <option value="dotnet">.NET / Full Stack</option>
+          <option value="genai">Generative / Agentic AI</option>
+          <option value="aiml">AI/ML / Data Science</option>
+          <option value="hybrid">Hybrid</option>
+        </select>
+        <details id="settingsBox">
+          <summary>Tailoring settings</summary>
+          <div class="toggles" style="margin-top:10px">
+            <label><input type="checkbox" id="s_rewriteSummary" checked> Rewrite summary</label>
+            <label><input type="checkbox" id="s_rewriteProject1" checked> Rewrite 1st project</label>
+            <label><input type="checkbox" id="s_rewriteProject2" checked> Rewrite 2nd project</label>
+            <label><input type="checkbox" id="s_optimizeSkills" checked> Optimize skills</label>
+            <label><input type="checkbox" id="s_reconcileEnvironment" checked> Reconcile Environment</label>
+            <label><input type="checkbox" checked disabled> Older projects locked</label>
+            <label><input type="checkbox" checked disabled> Preserve employment facts</label>
+          </div>
+          <div class="grid4" style="margin-top:8px">
+            <div><label for="s_alignmentTarget">Target %</label><input id="s_alignmentTarget" type="text" value="98"></div>
+            <div><label for="s_requiredPages">Pages</label><input id="s_requiredPages" type="text" value="6"></div>
+            <div><label for="s_summaryMinBullets">Summary min</label><input id="s_summaryMinBullets" type="text" value="18"></div>
+            <div><label for="s_projectMinBullets">Project min</label><input id="s_projectMinBullets" type="text" value="15"></div>
+          </div>
+        </details>
+      </div>
+      <div class="panel">
+        <h2>2 · Job description</h2>
+        <textarea id="jd" placeholder="Paste the complete job description, including mandatory and preferred skills."></textarea>
+        <div class="row" style="margin-top:14px;justify-content:space-between">
+          <span class="muted small" id="jdCount">0 characters</span>
+          <button class="primary" id="go" disabled>Generate tailored resume</button>
+        </div>
+      </div>
+    </div>
+    <div id="status"></div>
+
+    <!-- RESULTS -->
+    <div id="results" class="hidden">
+      <div class="panel" style="margin-top:16px">
+        <div class="row" style="justify-content:space-between">
+          <h2 id="resTitle" style="margin:0"></h2>
+          <div class="row"><button id="copy">Copy text</button><button class="primary" id="download">⬇ Download .docx</button></div>
+        </div>
+        <div class="grid4" style="margin-top:14px" id="stats"></div>
+        <div class="grid2" style="margin-top:12px">
+          <div><h3>Validation</h3><div id="validation"></div></div>
+          <div><h3>Remaining gaps</h3><div id="gaps"></div></div>
+        </div>
+      </div>
+      <div class="tabs" id="resTabs">
+        <button data-t="preview" class="on">Preview</button>
+        <button data-t="matrix">Requirement matrix</button>
+        <button data-t="changes">Changes</button>
+        <button data-t="confirm">Confirm experience</button>
+      </div>
+      <div class="panel" id="t_preview"></div>
+      <div class="panel hidden" id="t_matrix"></div>
+      <div class="panel hidden" id="t_changes"></div>
+      <div class="panel hidden" id="t_confirm"></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px"><h2>History</h2><div id="history" class="small muted">No runs yet.</div></div>
+  </section>
+</div>
+
+<script>
+// ── Configuration ───────────────────────────────────────────────────
+// Point this at your Railway backend. Can also be overridden with ?api=https://...
+const API = (new URLSearchParams(location.search).get('api') || window.RESUMEAI_API || 'https://resumeai-production-7124.up.railway.app').replace(/\/$/, '');
+
+const $ = id => document.getElementById(id);
+const el = (tag, attrs = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v; else if (k.startsWith('on')) n.addEventListener(k.slice(2), v); else n.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k !== null && k !== undefined) n.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  return n;
+};
+const set = (node, ...kids) => node.replaceChildren(...kids.flat().filter(k => k !== null && k !== undefined && k !== false));
+const store = { get t() { try { return localStorage.getItem('rai_token'); } catch { return null; } }, set t(v) { try { v ? localStorage.setItem('rai_token', v) : localStorage.removeItem('rai_token'); } catch {} } };
+let token = store.t, user = null, file = null, last = null, mode = 'login';
+
+async function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (opts.json) { headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(opts.json); }
+  let res;
+  try { res = await fetch(API + path, { ...opts, headers }); }
+  catch { throw new Error(`Unable to reach the server at ${API}. Check that the Railway service is online.`); }
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 401 && path !== '/api/auth/login') { logout(); throw new Error(body.error || 'Please sign in again.'); }
+  if (!res.ok || body.success === false) throw Object.assign(new Error(body.error || `Request failed (${res.status})`), { body });
+  return body;
+}
+
+// ── Auth ────────────────────────────────────────────────────────────
+function setMode(m) {
+  mode = m;
+  $('tabLogin').classList.toggle('on', m === 'login'); $('tabRegister').classList.toggle('on', m === 'register');
+  $('nameField').classList.toggle('hidden', m === 'login'); $('authBtn').textContent = m === 'login' ? 'Sign in' : 'Create account';
+}
+$('tabLogin').onclick = () => setMode('login'); $('tabRegister').onclick = () => setMode('register');
+$('authForm').onsubmit = async e => {
+  e.preventDefault(); set($('authMsg'), );
+  try {
+    const body = mode === 'login' ? { email: $('email').value, password: $('password').value } : { name: $('name').value, email: $('email').value, password: $('password').value };
+    const r = await api(`/api/auth/${mode}`, { method: 'POST', json: body });
+    token = r.token; store.t = token; user = r.user; show();
+  } catch (err) { set($('authMsg'), el('div', { class: 'alert err', text: err.message })); }
+};
+function logout() { token = null; store.t = null; user = null; show(); }
+
+async function show() {
+  if (token && !user) { try { user = await api('/api/auth/me'); } catch { token = null; store.t = null; } }
+  $('authView').classList.toggle('hidden', !!user); $('appView').classList.toggle('hidden', !user);
+  set($('userBox'), ...(user ? [el('span', { class: 'muted small', text: user.email }), el('button', { onclick: logout, text: 'Sign out' })] : []));
+  if (user) { loadCandidates(); loadHistory(); }
+}
+
+// ── Inputs ──────────────────────────────────────────────────────────
+const drop = $('drop');
+drop.onclick = () => $('file').click();
+drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') $('file').click(); };
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); pick(e.dataTransfer.files[0]); };
+$('file').onchange = e => pick(e.target.files[0]);
+function pick(f) {
+  if (!f) return;
+  if (f.size > 5 * 1024 * 1024) { status('err', 'File too large (max 5 MB).'); return; }
+  file = f; set($('dropText'), el('strong', { text: f.name }), el('br'), el('span', { class: 'muted small', text: `${Math.round(f.size / 1024)} KB · click to change` })); ready();
+}
+$('jd').oninput = () => { $('jdCount').textContent = `${$('jd').value.length.toLocaleString()} characters`; ready(); };
+function ready() { $('go').disabled = !(file && $('jd').value.trim().length >= 20); }
+
+async function loadCandidates() {
+  try {
+    const { candidates } = await api('/api/candidates');
+    const sel = $('candidate'); const cur = sel.value;
+    set(sel, el('option', { value: '', text: 'Auto-detect from resume name' }), ...candidates.map(c => el('option', { value: c.id, text: `${c.name} (${c.confirmationCount} confirmed skills)` })));
+    sel.value = cur;
+  } catch {}
+}
+
+function settings() {
+  const s = {};
+  for (const k of ['rewriteSummary', 'rewriteProject1', 'rewriteProject2', 'optimizeSkills', 'reconcileEnvironment']) s[k] = $(`s_${k}`).checked;
+  for (const k of ['alignmentTarget', 'requiredPages', 'summaryMinBullets', 'projectMinBullets']) s[k] = Number($(`s_${k}`).value) || undefined;
+  s.domainOverride = $('domain').value;
+  return s;
+}
+
+function status(kind, msg, extra) {
+  const box = $('status');
+  if (!kind) return set(box, );
+  set(box, el('div', { class: `alert ${kind}` }, msg, extra ? el('div', { class: 'small', style: 'opacity:.8;margin-top:4px', text: extra }) : null));
+}
+
+// ── Run ─────────────────────────────────────────────────────────────
+const STAGES = ['Reading the complete resume', 'Building the requirement matrix', 'Checking evidence for every requirement', 'Rewriting the Professional Summary', 'Rewriting the two most recent projects', 'Optimizing skills and Environment lines', 'Validating facts', 'Rendering and checking page count', 'Scoring the final resume'];
+$('go').onclick = async () => {
+  const btn = $('go'); btn.disabled = true;
+  const t0 = Date.now(); let i = 0;
+  const tick = () => { const s = Math.round((Date.now() - t0) / 1000); btn.replaceChildren(el('span', { class: 'spinner' }), `${STAGES[Math.min(STAGES.length - 1, Math.floor(s / 12))]}… ${s}s`); };
+  tick(); const timer = setInterval(tick, 1000); void i;
+  status(); $('results').classList.add('hidden');
+  try {
+    const fd = new FormData();
+    fd.append('resume', file); fd.append('jobDescription', $('jd').value);
+    fd.append('settings', JSON.stringify(settings()));
+    if ($('candidate').value) fd.append('candidateId', $('candidate').value);
+    last = await api('/api/resume/optimize', { method: 'POST', body: fd });
+    renderResults(last); loadCandidates(); loadHistory();
+  } catch (err) {
+    status('err', err.message, err.body && err.body.requestId ? `Request ID: ${err.body.requestId}` : '');
+  } finally { clearInterval(timer); btn.disabled = false; btn.textContent = 'Generate tailored resume'; }
+};
+
+// ── Results ─────────────────────────────────────────────────────────
+function stat(k, v, d) { return el('div', { class: 'stat' }, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: v }), el('div', { class: 'd', text: d || '' })); }
+const pct = n => `${Math.round(n)}%`;
+
+function renderResults(r) {
+  const v = r.v2; $('results').classList.remove('hidden');
+  $('resTitle').textContent = `${v.candidate.name} → ${v.jdTitle || 'tailored resume'} · ${v.domain.label}`;
+  const s = v.scores;
+  set($('stats'), 
+    stat('Keyword coverage', pct(s.after.keywordCoverage), `before ${pct(s.before.keywordCoverage)}`),
+    stat('Qualification match', pct(s.after.qualificationMatch), `before ${pct(s.before.qualificationMatch)}`),
+    stat('Supported alignment', pct(s.after.supportedAlignment), `target ${s.target}% · ${s.targetMet ? 'met' : 'not met'}`),
+    stat('Critical requirements', `${s.criticalCovered}/${s.criticalTotal}`, 'covered with evidence'),
+  );
+  const val = v.validation;
+  const pageOk = val.pagesOk;
+  set($('validation'), 
+    el('div', { class: 'row' },
+      el('span', { class: `pill ${pageOk ? 'good' : val.pageCountVerified ? 'warn' : 'bad'}`, text: val.pageCountVerified ? `${val.pageCount} page(s) rendered / ${val.requiredPages} required` : 'page count not verified' }),
+      el('span', { class: `pill ${val.formatting.issues.length ? 'warn' : 'good'}`, text: val.formatting.issues.length ? `${val.formatting.issues.length} formatting note(s)` : 'Calibri 10 · single spacing · no blank lines' }),
+      el('span', { class: `pill ${val.lockedProjectsIntact ? 'good' : 'bad'}`, text: val.lockedProjectsIntact ? 'Protected projects unchanged' : 'Protected projects changed!' })),
+    val.warnings.length ? el('ul', { class: 'list small' }, val.warnings.map(w => el('li', { text: w }))) : el('div', { class: 'small muted', style: 'margin-top:6px', text: 'No warnings.' }),
+    val.formatting.issues.length ? el('ul', { class: 'list small muted' }, val.formatting.issues.map(w => el('li', { text: w }))) : null,
+  );
+  set($('gaps'), 
+    v.unsupportedSkills.length ? el('div', {}, el('div', { class: 'small muted', text: 'Not supported by the resume or confirmations (not added):' }), el('div', { class: 'row', style: 'margin-top:6px' }, v.unsupportedSkills.map(u => el('span', { class: `pill ${u.priority === 'Critical' ? 'bad' : 'warn'}`, text: `${u.requirement} · ${u.priority}` })))) : el('div', { class: 'small muted', text: 'No unsupported requirements.' }),
+    v.transferableSkills.length ? el('div', { style: 'margin-top:10px' }, el('div', { class: 'small muted', text: 'Covered by related experience:' }), el('ul', { class: 'list small' }, v.transferableSkills.map(t => el('li', { text: `${t.requirement} — ${t.relatedExperience}` })))) : null,
+  );
+  renderPreview(v); renderMatrix(v); renderChanges(r); renderConfirm(v);
+  setTab('preview');
+  status('ok', `Done. Supported alignment ${pct(s.after.supportedAlignment)} (target ${s.target}%).`);
+}
+
+function renderPreview(v) {
+  const p = v.preview;
+  const origSum = new Set(p.original.professionalSummary);
+  const box = $('t_preview');
+  set(box, 
+    el('h3', { text: `Professional Summary (${p.professionalSummary.length} bullets — highlighted = new or rewritten)` }),
+    el('ul', { class: 'bullets' }, p.professionalSummary.map(b => el('li', { class: origSum.has(b) ? '' : 'new', text: b }))),
+    el('h3', { text: 'Technical Skills' }),
+    el('table', {}, el('tbody', {}, p.technicalSkills.map(r => el('tr', {}, el('th', { text: r.category }), el('td', { text: r.value }))))),
+    ...p.projects.map(pr => {
+      const orig = new Set((p.original.projects.find(o => o.id === pr.id) || { bullets: [] }).bullets);
+      return el('div', {},
+        el('h3', { text: `${pr.client} · ${pr.dates} — ${pr.bullets.length} bullets (rewritten)` }),
+        el('ul', { class: 'bullets' }, pr.bullets.map(b => el('li', { class: orig.has(b) ? '' : 'new', text: b }))),
+        el('div', { class: 'small' }, el('strong', { text: 'Environment: ' }), pr.environment));
+    }),
+    el('h3', { text: 'Protected sections (unchanged)' }),
+    el('ul', { class: 'list small' }, p.protected.map(x => el('li', { class: 'lock', text: `🔒 ${x.client} · ${x.dates} · ${x.bullets} bullets` }))),
+  );
+}
+
+function renderMatrix(v) {
+  const cls = s => ({ verified: 'good', confirmed: 'good', transferable: 'warn', unsupported: 'bad' }[s] || '');
+  set($('t_matrix'), 
+    el('div', { class: 'small muted', text: v.scores.formula }),
+    el('table', { style: 'margin-top:10px' },
+      el('thead', {}, el('tr', {}, ['Requirement', 'Priority', 'Status', 'Shown in', 'Score', 'Evidence'].map(h => el('th', { text: h })))),
+      el('tbody', {}, v.requirements.map(r => el('tr', {},
+        el('td', { text: r.requirement }), el('td', { text: r.priority }),
+        el('td', {}, el('span', { class: `pill ${cls(r.supportStatus)}`, text: r.supportStatus })),
+        el('td', { text: { summary: 'Summary', recent: 'Recent project', other: 'Elsewhere', none: '—' }[r.resumeSection] }),
+        el('td', { text: `${r.scoreContribution}/${r.maxContribution}` }),
+        el('td', { class: 'small muted', text: (r.evidenceSource || '').slice(0, 160) }))))));
+}
+
+function renderChanges(r) {
+  set($('t_changes'), el('ul', { class: 'list' }, r.changes.map(c => el('li', {}, el('span', { class: `pill ${c.type === 'removed' ? 'warn' : 'good'}`, text: c.type }), ' ', c.description))));
+}
+
+async function renderConfirm(v) {
+  const box = $('t_confirm');
+  const gaps = [...v.unsupportedSkills.map(u => u.requirement), ...v.transferableSkills.map(t => t.requirement)];
+  const form = el('form', { class: 'grid2' });
+  const skill = el('input', { type: 'text', id: 'c_skill', required: 'required', placeholder: 'e.g. EDI X12 837/835' });
+  const proj = el('select', { id: 'c_proj' }, el('option', { value: '', text: 'General (summary & skills only)' }), v.projects.map(p => el('option', { value: p.id, text: `${p.client}${p.dates ? ` · ${p.dates}` : ''}` })));
+  const ev = el('textarea', { id: 'c_ev', style: 'min-height:90px', required: 'required', placeholder: 'What did the candidate actually build, and how was this skill used? (shown to the AI as evidence)' });
+  const msg = el('div');
+  form.append(
+    el('div', {}, el('label', { for: 'c_skill', text: 'Skill' }), skill, el('label', { for: 'c_proj', text: 'Project where it was used' }), proj),
+    el('div', {}, el('label', { for: 'c_ev', text: 'Evidence (required)' }), ev, el('div', { style: 'margin-top:10px' }, el('button', { class: 'primary', type: 'submit', text: 'Save confirmation' })), msg));
+  form.onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await api(`/api/candidates/${encodeURIComponent(v.candidate.id)}/confirmations`, { method: 'POST', json: { skill: skill.value, projectId: proj.value || null, evidence: ev.value } });
+      set(msg, el('div', { class: 'alert ok', text: 'Saved. Run the tailoring again to use it.' })); skill.value = ''; ev.value = ''; listConfs();
+    } catch (err) { set(msg, el('div', { class: 'alert err', text: err.message })); }
+  };
+  const confList = el('div');
+  async function listConfs() {
+    try {
+      const { candidate } = await api(`/api/candidates/${encodeURIComponent(v.candidate.id)}`);
+      set(confList, candidate.confirmations.length ? el('table', {}, el('tbody', {}, candidate.confirmations.map(c => el('tr', {},
+        el('td', { text: c.skill }), el('td', { class: 'small muted', text: c.client || 'General' }), el('td', { class: 'small', text: c.evidence }),
+        el('td', {}, el('button', { text: 'Remove', onclick: async () => { await api(`/api/candidates/${encodeURIComponent(v.candidate.id)}/confirmations/${c.id}`, { method: 'DELETE' }); listConfs(); } })))))) : el('div', { class: 'small muted', text: 'No confirmed skills yet.' }));
+    } catch {}
+  }
+  set(box, 
+    el('div', { class: 'small muted', text: 'Only confirm experience the candidate genuinely has. Confirmations are stored for this candidate only and reused in future runs.' }),
+    gaps.length ? el('div', { class: 'row', style: 'margin:10px 0' }, el('span', { class: 'small muted', text: 'Quick pick:' }), gaps.map(g => el('button', { type: 'button', text: g, onclick: () => { skill.value = g; ev.focus(); } }))) : null,
+    form, el('h3', { text: 'Confirmed skills for this candidate' }), confList);
+  listConfs();
+}
+
+function setTab(t) {
+  for (const b of $('resTabs').querySelectorAll('button')) b.classList.toggle('on', b.dataset.t === t);
+  for (const k of ['preview', 'matrix', 'changes', 'confirm']) $(`t_${k}`).classList.toggle('hidden', k !== t);
+}
+$('resTabs').onclick = e => { if (e.target.dataset.t) setTab(e.target.dataset.t); };
+
+$('download').onclick = () => {
+  if (!last || !last.docxBase64) return;
+  const bin = atob(last.docxBase64); const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  const a = el('a', { href: URL.createObjectURL(blob), download: `${(last.v2.candidate.name || 'resume').replace(/\s+/g, '_')}_${(last.v2.jdTitle || 'tailored').replace(/[^A-Za-z0-9]+/g, '_').slice(0, 40)}.docx` });
+  document.body.append(a); a.click(); a.remove();
+};
+$('copy').onclick = async () => { if (last) { try { await navigator.clipboard.writeText(last.optimizedResume); status('ok', 'Resume text copied.'); } catch { status('err', 'Copy failed — your browser blocked clipboard access.'); } } };
+
+async function loadHistory() {
+  try {
+    const { history } = await api('/api/resume/history');
+    set($('history'), history.length ? el('table', {}, el('tbody', {}, history.slice(0, 15).map(h => el('tr', {},
+      el('td', { text: new Date(h.createdAt).toLocaleString() }), el('td', { text: h.candidateName || '' }), el('td', { text: h.jdTitle || h.jdSnippet.slice(0, 60) }),
+      el('td', { text: h.scores ? `${Math.round(h.scores.after.supportedAlignment)}% supported` : `${h.matchScore}%` }), el('td', { text: h.pageCount ? `${h.pageCount} pages` : '' }))))) : el('span', { text: 'No runs yet.' }));
+  } catch {}
+}
+
+show();
+</script>
+</body>
+</html>
