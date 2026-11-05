@@ -130,12 +130,26 @@ function createApp({ provider = createAnthropicProvider(), store = new Store(), 
   app.post('/api/candidates/:cid/confirmations', authMiddleware, (req, res) => {
     const { skill, projectId, evidence } = req.body || {};
     if (!skill || String(skill).trim().length < 2) return fail(res, req, 400, 'VALIDATION', 'Skill is required');
-    if (!evidence || String(evidence).trim().length < 15) return fail(res, req, 400, 'VALIDATION', 'Describe the actual experience (at least 15 characters): what was built and how the skill was used.');
+    if (!evidence || String(evidence).trim().length < 10) return fail(res, req, 400, 'VALIDATION', 'Add a short description of the actual experience (at least 10 characters), e.g. "Built MCP servers for test automation".');
     if (String(skill).length > 80 || String(evidence).length > 1000) return fail(res, req, 400, 'VALIDATION', 'Skill or evidence is too long');
     try {
       const conf = store.addConfirmation(req.user.userId, req.params.cid, { skill, projectId: projectId || null, evidence });
       res.status(201).json({ confirmation: conf });
     } catch (e) { fail(res, req, e.status || 500, 'CONFIRMATION', e.message); }
+  });
+
+  // Confirm several queued skills in one click.
+  app.post('/api/candidates/:cid/confirmations/batch', authMiddleware, (req, res) => {
+    const items = Array.isArray(req.body && req.body.items) ? req.body.items.slice(0, 40) : [];
+    if (!items.length) return fail(res, req, 400, 'VALIDATION', 'No confirmations supplied');
+    const saved = [], errors = [];
+    for (const it of items) {
+      const skill = String((it && it.skill) || '').trim(), evidence = String((it && it.evidence) || '').trim();
+      if (skill.length < 2 || evidence.length < 10 || skill.length > 80 || evidence.length > 1000) { errors.push({ skill, error: 'Skill and a short description (10+ characters) are required' }); continue; }
+      try { saved.push(store.addConfirmation(req.user.userId, req.params.cid, { skill, projectId: it.projectId || null, evidence })); }
+      catch (e) { errors.push({ skill, error: e.message }); }
+    }
+    res.status(saved.length ? 201 : 400).json({ saved, errors });
   });
 
   app.delete('/api/candidates/:cid/confirmations/:confId', authMiddleware, (req, res) => {
@@ -216,7 +230,7 @@ function createApp({ provider = createAnthropicProvider(), store = new Store(), 
         removedCount: removed,
         addedCount: added,
         jdStack: { swapsDetected: 0, roleType: result.roleType },
-        summary: `Tailored for ${result.jdTitle || 'this JD'} (${result.domain.label}). Supported alignment ${result.scores.after.supportedAlignment}%.`,
+        summary: `Tailored for ${result.jdTitle || 'this JD'} (${result.domain.label}). Supported keyword coverage ${result.scores.after.supportedKeywordCoverage}%; ${result.confirmationQueue.length} skill(s) awaiting confirmation.`,
         // ── V2 fields ──
         v2: {
           candidate: { id: candidate.id, name: candidate.name },
@@ -224,6 +238,8 @@ function createApp({ provider = createAnthropicProvider(), store = new Store(), 
           jdTitle: result.jdTitle,
           scores: result.scores,
           requirements: result.requirements,
+          coverageMatrix: result.coverageMatrix,
+          confirmationQueue: result.confirmationQueue,
           supportedSkills: result.supportedSkills,
           transferableSkills: result.transferableSkills,
           unsupportedSkills: result.unsupportedSkills,

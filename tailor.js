@@ -15,8 +15,11 @@ const { analysisPrompt, rewritePrompt, layoutPrompt } = require('./prompts');
 const { normalizeRequirements, guardRewrite, enforceGuard, versionWarnings, fixYears, projectSourceText } = require('./evidence');
 const { validateRewrite, preserveSkills } = require('./schema');
 const { scoreResume, underrepresented } = require('./scoring');
+const { extractExplicitTerms } = require('./jdTerms');
 const { applyRewrite, lockedSectionsIntact, setMargins, getMargins, auditFormatting } = require('./docxEngine');
 const render = require('./render');
+const { learnWindow } = require('./lineFit');
+const { fitLengths, verifyRendered, repairTargets, targetPages } = require('./twoLine');
 
 class PipelineError extends Error {
   constructor(code, message, status = 422) { super(message); this.code = code; this.status = status; }
@@ -39,6 +42,7 @@ function mergeSettings(input) {
     summaryMinBullets: clamp(s.summaryMinBullets, 5, 40, d.summaryMinBullets),
     projectMinBullets: clamp(s.projectMinBullets, 5, 40, d.projectMinBullets),
     preserveFacts: true, // always on — cannot be disabled
+    exactTwoLineBullets: bool(s.exactTwoLineBullets, true),
     domainOverride: ['dotnet', 'genai', 'aiml', 'hybrid'].includes(s.domainOverride) ? s.domainOverride : '',
     editableProjectIds: Array.isArray(s.editableProjectIds) ? s.editableProjectIds.map(String).slice(0, config.maxEditableProjects) : null,
   };
@@ -60,19 +64,22 @@ async function toDocx(buffer, fileName) {
 }
 
 function sectionsFromModel(model, editableIds) {
-  const summary = model.summary ? model.summary.bullets.join('\n') : '';
-  const recent = model.projects.filter(p => editableIds.includes(p.id)).map(p => `${p.bullets.join('\n')}\n${p.environment}`).join('\n');
-  return { summary, recent, other: model.fullText };
+  return {
+    summary: model.summary ? model.summary.bullets.join('\n') : '',
+    skills: model.skills ? model.skills.rows.map(r => `${r.category}: ${r.value}`).join('\n') : '',
+    all: model.fullText,
+    projects: model.projects.filter(p => editableIds.includes(p.id)).map(p => ({ id: p.id, label: p.client, bullets: p.bullets.join('\n'), environment: p.environment })),
+  };
 }
 
 function sectionsFromRewrite(rewrite, model, editable) {
   const editableIds = editable.map(p => p.id);
   const locked = model.projects.filter(p => !editableIds.includes(p.id)).map(projectSourceText).join('\n');
-  return {
-    summary: rewrite.professionalSummary.join('\n'),
-    recent: Object.values(rewrite.projects).map(p => `${p.bullets.join('\n')}\n${p.environment.join(', ')}`).join('\n'),
-    other: `${rewrite.technicalSkills.map(c => `${c.category}: ${c.items.join(', ')}`).join('\n')}\n${locked}\n${model.header.lines.join('\n')}`,
-  };
+  const summary = rewrite.professionalSummary.join('\n');
+  const skills = rewrite.technicalSkills.length ? rewrite.technicalSkills.map(c => `${c.category}: ${c.items.join(', ')}`).join('\n')
+    : (model.skills ? model.skills.rows.map(r => `${r.category}: ${r.value}`).join('\n') : '');
+  const projects = editable.map(p => ({ id: p.id, label: p.client, bullets: (rewrite.projects[p.id] || { bullets: [] }).bullets.join('\n'), environment: (rewrite.projects[p.id] || { environment: [] }).environment.join('; ') }));
+  return { summary, skills, projects, all: [summary, skills, ...projects.map(x => `${x.bullets}\n${x.environment}`), locked, model.header.lines.join('\n')].join('\n') };
 }
 
 function countShortfalls(rewrite, editable, settings) {
@@ -86,10 +93,10 @@ function countShortfalls(rewrite, editable, settings) {
 }
 
 /** Score a draft as it would look after the evidence guard removes violations. */
-function scoreDraft(requirements, rewrite, violations, model, editable) {
+function scoreDraft(requirements, rewrite, violations, model, editable, explicitCount) { // explicitCount = explicit term list
   const copy = JSON.parse(JSON.stringify(rewrite));
   enforceGuard(copy, violations);
-  return scoreResume(requirements, sectionsFromRewrite(copy, model, editable));
+  return scoreResume(requirements, sectionsFromRewrite(copy, model, editable), { explicitTerms: explicitCount });
 }
 
 function draftForPrompt(rewrite) {
@@ -144,16 +151,25 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
 
   const resumeJson = modelForAI(model);
 
+  // Exact two-line bullets: learn the character window from this resume's own bullets.
+  let lengthWindow = null;
+  if (settings.exactTwoLineBullets) {
+    lengthWindow = await learnWindow(baseDocx, model);
+    settings.lengthWindow = lengthWindow;
+  }
+
   // 4. Requirement matrix + evidence
   const ap = analysisPrompt({ resumeJson, jdText, confirmations, resumeDomain: resumeDom.domain, jdDomain: jdDom.domain });
   const rawAnalysis = await callJson(provider, { ...ap, maxTokens: config.analysisMaxTokens, label: 'analysis', requestId, log });
-  const requirements = normalizeRequirements(rawAnalysis.requirements, { model, confirmations, jdText });
+  const explicitTerms = extractExplicitTerms(jdText);
+  const requirements = normalizeRequirements(rawAnalysis.requirements, { model, confirmations, jdText, explicitTerms });
+  const explicitCount = explicitTerms.length;
   if (!requirements.length) throw new AIError('invalid_json', 'The analysis returned no job requirements.', { stage: 'analysis' });
   const analysis = { ...rawAnalysis, requirements };
   mark('analysis');
 
   const editableIds = editable.map(p => p.id);
-  const before = scoreResume(requirements, sectionsFromModel(model, editableIds));
+  const before = scoreResume(requirements, sectionsFromModel(model, editableIds), { explicitTerms });
 
   // 5. Rewrite
   const rewriteOnce = async extraInstructions => {
@@ -170,28 +186,29 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
   };
 
   let best = await rewriteOnce('');
+  const firstDraftWarnings = [...best.warnings];
   let violations = guardRewrite(best.rewrite, { model, confirmations, requirements, editable });
-  let draftScore = scoreDraft(requirements, best.rewrite, violations, model, editable);
+  let draftScore = scoreDraft(requirements, best.rewrite, violations, model, editable, explicitTerms);
   mark('rewrite');
 
   // 6. Optimization loop (bounded)
   const passes = [];
   for (let pass = 1; pass <= config.optimizationPasses; pass++) {
-    const under = underrepresented(draftScore);
+    const under = underrepresented(draftScore, editable.map(p => ({ id: p.id, label: p.client })));
     const short = countShortfalls(best.rewrite, editable, settings);
-    if (!violations.length && !short.length && (!under.length || draftScore.supportedAlignment >= settings.alignmentTarget)) break;
+    if (!violations.length && !short.length && (!under.length || draftScore.supportedKeywordCoverage >= settings.alignmentTarget)) break;
     const lines = [];
     if (violations.length) lines.push(`Remove or rephrase these unsupported claims (the technology is not evidenced for that section): ${violations.slice(0, 25).map(v => `[${v.section}${v.projectId ? ` ${v.projectId}` : ''}] ${v.terms.join(', ')}`).join('; ')}.`);
-    if (under.length) lines.push(`These supported requirements are under-represented — strengthen them in the Professional Summary, and in a project ONLY where that project's evidence shows them (evidence projects in brackets): ${under.slice(0, 25).map(r => `${r.requirement} [${r.evidenceProjects.join(',') || 'summary only'}]`).join('; ')}.`);
+    if (under.length) lines.push(`COVERAGE GAPS — these requirements are supported by the candidate's evidence but are missing from sections where they belong. Use the exact JD keyword and add each one to every section listed (rewrite or merge existing bullets; do not just append): ${under.slice(0, 40).map(r => `"${r.keyword}" → [${r.missingIn.join(' | ')}]`).join('; ')}.`);
     if (short.length) lines.push(short.join(' '));
     lines.push(`Your previous draft follows; return the complete corrected JSON:\n${draftForPrompt(best.rewrite)}`);
     let candidate;
     try { candidate = await rewriteOnce(lines.join('\n')); } catch (e) { warnings.push(`Optimization pass ${pass} failed (${e.kind || e.message}); kept the previous draft.`); break; }
     const cViol = guardRewrite(candidate.rewrite, { model, confirmations, requirements, editable });
-    const cScore = scoreDraft(requirements, candidate.rewrite, cViol, model, editable);
-    const better = cViol.length <= violations.length && cScore.supportedAlignment >= draftScore.supportedAlignment - 0.5 &&
+    const cScore = scoreDraft(requirements, candidate.rewrite, cViol, model, editable, explicitTerms);
+    const better = cViol.length <= violations.length && cScore.supportedKeywordCoverage >= draftScore.supportedKeywordCoverage - 0.5 &&
       countShortfalls(candidate.rewrite, editable, settings).length <= short.length;
-    passes.push({ pass, accepted: better, supportedAlignment: cScore.supportedAlignment, violations: cViol.length });
+    passes.push({ pass, accepted: better, supportedKeywordCoverage: cScore.supportedKeywordCoverage, gapsBefore: under.length, violations: cViol.length });
     if (!better) break;
     best = candidate; violations = cViol; draftScore = cScore;
   }
@@ -200,10 +217,14 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
   // 7. Enforce facts: strip whatever is still unsupported.
   const removedClaims = enforceGuard(best.rewrite, violations);
   const rewrite = best.rewrite;
-  warnings.push(...best.warnings);
+  warnings.push(...firstDraftWarnings, ...best.warnings);
   if (removedClaims.length) warnings.push(`${removedClaims.length} statement(s) were removed because they named technologies without supporting evidence.`);
   warnings.push(...versionWarnings(rewrite, editable));
   warnings.push(...countShortfalls(rewrite, editable, settings));
+
+  const tlCtx = { provider, window: lengthWindow, requestId, log, requirements, model, confirmations, editable, jdText };
+  if (lengthWindow) await fitLengths(rewrite, tlCtx);
+  mark('lengths');
 
   // 8. Generate DOCX + layout validation
   const build = rw => {
@@ -216,66 +237,103 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
   let buffer = built.buffer;
 
   const target = settings.requiredPages;
-  let page = await render.countPages(buffer);
-  const layoutLog = [];
-  if (page.verified) {
-    layoutLog.push({ step: 'initial', pages: page.pages });
-    // Margin adjustment within professional limits (0.5"–1").
-    let margin = getMargins(buffer);
-    const shrinking = page.pages > target;
-    for (let i = 0; i < 4 && page.pages !== target; i++) {
-      const next = shrinking ? Math.max(720, margin - 180) : Math.min(1440, margin + 180);
-      if (next === margin) break;
-      const trial = setMargins(buffer, next);
-      const tp = await render.countPages(trial);
-      if (!tp.verified) break;
-      layoutLog.push({ step: `margins ${(next / 1440).toFixed(2)}in`, pages: tp.pages });
-      // Widening margins must not overshoot the target.
-      if (!shrinking && tp.pages > target) break;
-      margin = next; buffer = trial; page = tp;
+  let page;
+  let layoutLog = [];
+  let twoLineReport = null;
+  if (lengthWindow) {
+    // Page target by whole bullets; margins stay exactly as in the original.
+    const tp = await targetPages(rewrite, build, tlCtx, settings);
+    buffer = tp.buffer; layoutLog = tp.log; warnings.push(...tp.warnings);
+    // Verify each bullet on the rendered page and repair mis-wrapped ones.
+    let measured = await verifyRendered(buffer, rewrite);
+    for (let k = 0; k < 2 && measured && measured.some(m => m.ok === false); k++) {
+      const changed = await fitLengths(rewrite, tlCtx, { targets: repairTargets(measured, lengthWindow), passes: 1 });
+      if (!changed) break;
+      buffer = build(rewrite).buffer;
+      measured = await verifyRendered(buffer, rewrite);
     }
-    // AI shrink / expand passes.
-    for (let i = 0; i < config.layoutPasses && page.pages !== target; i++) {
-      const direction = page.pages > target ? 'shrink' : 'expand';
-      const lp = layoutPrompt({ direction, pages: page.pages, target, settings, sectionsJson: JSON.parse(draftForPrompt(rewrite)) });
-      let raw;
-      try { raw = await callJson(provider, { ...lp, maxTokens: config.rewriteMaxTokens, label: `layout-${direction}`, requestId, log }); }
-      catch (e) { warnings.push(`Layout ${direction} pass failed (${e.kind || e.message}).`); break; }
-      let adjusted;
-      try { adjusted = validateRewrite({ ...raw, technicalSkills: raw.technicalSkills || rewrite.technicalSkills }, { editable, model }).rewrite; } catch { break; }
-      if (!settings.rewriteSummary) adjusted.professionalSummary = rewrite.professionalSummary;
-      adjusted.technicalSkills = rewrite.technicalSkills; // skills are not touched by layout passes
-      for (const p of editable) {
-        const a = adjusted.projects[p.id];
-        if (!a || a.unchanged) adjusted.projects[p.id] = rewrite.projects[p.id];
-        else if (!a.environment.length) a.environment = rewrite.projects[p.id].environment;
-      }
-      const v = guardRewrite(adjusted, { model, confirmations, requirements, editable });
-      enforceGuard(adjusted, v);
-      if (countShortfalls(adjusted, editable, settings).length > countShortfalls(rewrite, editable, settings).length) break;
-      const b2 = build(adjusted);
-      const trial = setMargins(b2.buffer, margin);
-      const tp = await render.countPages(trial);
-      if (!tp.verified) break;
-      layoutLog.push({ step: `ai-${direction}`, pages: tp.pages });
-      if (Math.abs(tp.pages - target) <= Math.abs(page.pages - target)) {
-        Object.assign(rewrite, { professionalSummary: adjusted.professionalSummary, projects: adjusted.projects });
-        buffer = trial; page = tp; built = b2;
-      }
+    page = await render.countPages(buffer);
+    if (page.verified && page.pages !== target) {
+      const tp2 = await targetPages(rewrite, build, tlCtx, settings);
+      buffer = tp2.buffer; layoutLog.push(...tp2.log);
+      measured = await verifyRendered(buffer, rewrite);
+      page = await render.countPages(buffer);
     }
-    // Once on target, relax margins back toward the original where possible.
-    const originalMargin = getMargins(baseDocx);
-    for (let i = 0; i < 4 && page.pages === target && margin < originalMargin; i++) {
-      const next = Math.min(originalMargin, margin + 180);
-      const trial = setMargins(buffer, next);
-      const tp = await render.countPages(trial);
-      if (!tp.verified || tp.pages !== target) break;
-      layoutLog.push({ step: `relax margins ${(next / 1440).toFixed(2)}in`, pages: tp.pages });
-      margin = next; buffer = trial; page = tp;
+    if (measured) {
+      const failed = measured.filter(m => m.ok === false);
+      twoLineReport = {
+        window: lengthWindow, checked: measured.filter(m => m.ok !== null).length,
+        passed: measured.filter(m => m.ok).length,
+        failed: failed.map(m => ({ section: m.id.startsWith('s:') ? 'Professional Summary' : (editable.find(p => m.id.split(':')[1] === p.id) || {}).client, text: m.text, lines: m.lines, lastLineFill: m.lastFill })),
+      };
+      if (failed.length) warnings.push(`${failed.length} bullet(s) do not fill exactly two complete lines; they are listed under "Two-line check".`);
     }
-    if (page.pages !== target) warnings.push(`The resume renders to ${page.pages} page(s), not the required ${target}, after ${layoutLog.length - 1} layout adjustment(s). It is delivered as a best effort.`);
+    if (!page.verified) warnings.push(page.error);
+    else if (page.pages !== target) warnings.push(`The resume renders to ${page.pages} page(s), not the required ${target}. It is delivered as a best effort.`);
+    else for (let i = warnings.length - 1; i >= 0; i--) if (/^Cannot reach \d+ pages|^Could not add enough/.test(warnings[i])) warnings.splice(i, 1);
   } else {
-    warnings.push(page.error);
+    page = await render.countPages(buffer);
+    layoutLog = [];
+    if (page.verified) {
+      layoutLog.push({ step: 'initial', pages: page.pages });
+      // Margin adjustment within professional limits (0.5"–1").
+      let margin = getMargins(buffer);
+      const shrinking = page.pages > target;
+      for (let i = 0; i < 4 && page.pages !== target; i++) {
+        const next = shrinking ? Math.max(720, margin - 180) : Math.min(1440, margin + 180);
+        if (next === margin) break;
+        const trial = setMargins(buffer, next);
+        const tp = await render.countPages(trial);
+        if (!tp.verified) break;
+        layoutLog.push({ step: `margins ${(next / 1440).toFixed(2)}in`, pages: tp.pages });
+        // Widening margins must not overshoot the target.
+        if (!shrinking && tp.pages > target) break;
+        margin = next; buffer = trial; page = tp;
+      }
+      // AI shrink / expand passes.
+      for (let i = 0; i < config.layoutPasses && page.pages !== target; i++) {
+        const direction = page.pages > target ? 'shrink' : 'expand';
+        const lp = layoutPrompt({ direction, pages: page.pages, target, settings, sectionsJson: JSON.parse(draftForPrompt(rewrite)) });
+        let raw;
+        try { raw = await callJson(provider, { ...lp, maxTokens: config.rewriteMaxTokens, label: `layout-${direction}`, requestId, log }); }
+        catch (e) { warnings.push(`Layout ${direction} pass failed (${e.kind || e.message}).`); break; }
+        let adjusted;
+        try { adjusted = validateRewrite({ ...raw, technicalSkills: raw.technicalSkills || rewrite.technicalSkills }, { editable, model }).rewrite; } catch { break; }
+        if (!settings.rewriteSummary) adjusted.professionalSummary = rewrite.professionalSummary;
+        adjusted.technicalSkills = rewrite.technicalSkills; // skills are not touched by layout passes
+        for (const p of editable) {
+          const a = adjusted.projects[p.id];
+          if (!a || a.unchanged) adjusted.projects[p.id] = rewrite.projects[p.id];
+          else if (!a.environment.length) a.environment = rewrite.projects[p.id].environment;
+        }
+        const v = guardRewrite(adjusted, { model, confirmations, requirements, editable });
+        enforceGuard(adjusted, v);
+        if (countShortfalls(adjusted, editable, settings).length > countShortfalls(rewrite, editable, settings).length) break;
+        const b2 = build(adjusted);
+        const trial = setMargins(b2.buffer, margin);
+        const tp = await render.countPages(trial);
+        if (!tp.verified) break;
+        layoutLog.push({ step: `ai-${direction}`, pages: tp.pages });
+        if (Math.abs(tp.pages - target) <= Math.abs(page.pages - target)) {
+          Object.assign(rewrite, { professionalSummary: adjusted.professionalSummary, projects: adjusted.projects });
+          buffer = trial; page = tp; built = b2;
+        }
+      }
+      // Once on target, relax margins back toward the original where possible.
+      const originalMargin = getMargins(baseDocx);
+      for (let i = 0; i < 4 && page.pages === target && margin < originalMargin; i++) {
+        const next = Math.min(originalMargin, margin + 180);
+        const trial = setMargins(buffer, next);
+        const tp = await render.countPages(trial);
+        if (!tp.verified || tp.pages !== target) break;
+        layoutLog.push({ step: `relax margins ${(next / 1440).toFixed(2)}in`, pages: tp.pages });
+        margin = next; buffer = trial; page = tp;
+      }
+      if (page.pages !== target) warnings.push(`The resume renders to ${page.pages} page(s), not the required ${target}, after ${layoutLog.length - 1} layout adjustment(s). It is delivered as a best effort.`);
+    } else {
+      warnings.push(page.error);
+    }
+
   }
   mark('layout');
 
@@ -286,7 +344,7 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
   const lockedOk = lockedCheck.every(x => x.intact);
   if (!lockedOk) warnings.push('Protected project content changed unexpectedly — please review before sending.');
   const formatting = auditFormatting(buffer, finalModel, editableIds, settings);
-  const after = scoreResume(requirements, sectionsFromModel(finalModel, editableIds));
+  const after = scoreResume(requirements, sectionsFromModel(finalModel, editableIds), { explicitTerms });
   mark('done');
 
   const supported = requirements.filter(r => r.status === 'verified' || r.status === 'confirmed');
@@ -315,11 +373,21 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
     editableProjects: editable.map(p => ({ id: p.id, client: p.client })),
     lockedProjects: lockedCheck,
     requirements: after.rows,
+    coverageMatrix: {
+      sections: [{ key: 'summary', label: 'Professional Summary' }, ...editable.map(p => ({ key: `project:${p.id}`, label: p.client })), { key: 'skills', label: 'Technical Skills' }, ...editable.map(p => ({ key: `env:${p.id}`, label: `Environment — ${p.client}` }))],
+      rows: after.rows,
+    },
+    confirmationQueue: after.rows.filter(r => r.finalStatus === 'Needs confirmation' || r.finalStatus === 'Related experience only')
+      .map(r => ({ requirement: r.requirement, keyword: r.keyword, priority: r.priority, status: r.supportStatus, note: r.supportStatus === 'transferable' ? r.evidenceSource : '' }))
+      .sort((a, b) => ({ Critical: 0, High: 1, Medium: 2, Low: 3 }[a.priority] - { Critical: 0, High: 1, Medium: 2, Low: 3 }[b.priority])),
     scores: {
-      before: { keywordCoverage: before.keywordCoverage, qualificationMatch: before.qualificationMatch, supportedAlignment: before.supportedAlignment },
-      after: { keywordCoverage: after.keywordCoverage, qualificationMatch: after.qualificationMatch, supportedAlignment: after.supportedAlignment },
+      before: { keywordCoverage: before.keywordCoverage, qualificationMatch: before.qualificationMatch, supportedKeywordCoverage: before.supportedKeywordCoverage, supportedAlignment: before.supportedKeywordCoverage, extractionCompleteness: before.extractionCompleteness },
+      after: { keywordCoverage: after.keywordCoverage, qualificationMatch: after.qualificationMatch, supportedKeywordCoverage: after.supportedKeywordCoverage, supportedAlignment: after.supportedKeywordCoverage, extractionCompleteness: after.extractionCompleteness },
       target: settings.alignmentTarget,
-      targetMet: after.supportedAlignment >= settings.alignmentTarget,
+      targetMet: after.supportedKeywordCoverage >= settings.alignmentTarget,
+      explicitTerms: explicitCount,
+      supportedCount: after.supportedCount,
+      needsConfirmation: after.needsConfirmation,
       criticalCovered: after.criticalCovered,
       criticalTotal: after.criticalTotal,
       formula: after.formula,
@@ -346,6 +414,7 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
       pagesOk: page.verified && page.pages === target,
       layoutLog,
       formatting,
+      twoLineBullets: twoLineReport,
       lockedProjectsIntact: lockedOk,
       optimizationPasses: passes,
       restoredSkills: best.restored,

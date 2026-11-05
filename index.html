@@ -108,11 +108,12 @@ th{color:var(--muted);font-weight:500}
             <label><input type="checkbox" id="s_rewriteProject2" checked> Rewrite 2nd project</label>
             <label><input type="checkbox" id="s_optimizeSkills" checked> Optimize skills</label>
             <label><input type="checkbox" id="s_reconcileEnvironment" checked> Reconcile Environment</label>
+            <label><input type="checkbox" id="s_exactTwoLineBullets" checked> Every bullet exactly 2 full lines</label>
             <label><input type="checkbox" checked disabled> Older projects locked</label>
             <label><input type="checkbox" checked disabled> Preserve employment facts</label>
           </div>
           <div class="grid4" style="margin-top:8px">
-            <div><label for="s_alignmentTarget">Target %</label><input id="s_alignmentTarget" type="text" value="98"></div>
+            <div><label for="s_alignmentTarget">Target %</label><input id="s_alignmentTarget" type="text" value="100"></div>
             <div><label for="s_requiredPages">Pages</label><input id="s_requiredPages" type="text" value="6"></div>
             <div><label for="s_summaryMinBullets">Summary min</label><input id="s_summaryMinBullets" type="text" value="18"></div>
             <div><label for="s_projectMinBullets">Project min</label><input id="s_projectMinBullets" type="text" value="15"></div>
@@ -147,7 +148,7 @@ th{color:var(--muted);font-weight:500}
         <button data-t="preview" class="on">Preview</button>
         <button data-t="matrix">Requirement matrix</button>
         <button data-t="changes">Changes</button>
-        <button data-t="confirm">Confirm experience</button>
+        <button data-t="confirm" id="confirmTabBtn">Confirm experience</button>
       </div>
       <div class="panel" id="t_preview"></div>
       <div class="panel hidden" id="t_matrix"></div>
@@ -241,7 +242,7 @@ async function loadCandidates() {
 
 function settings() {
   const s = {};
-  for (const k of ['rewriteSummary', 'rewriteProject1', 'rewriteProject2', 'optimizeSkills', 'reconcileEnvironment']) s[k] = $(`s_${k}`).checked;
+  for (const k of ['rewriteSummary', 'rewriteProject1', 'rewriteProject2', 'optimizeSkills', 'reconcileEnvironment', 'exactTwoLineBullets']) s[k] = $(`s_${k}`).checked;
   for (const k of ['alignmentTarget', 'requiredPages', 'summaryMinBullets', 'projectMinBullets']) s[k] = Number($(`s_${k}`).value) || undefined;
   s.domainOverride = $('domain').value;
   return s;
@@ -254,7 +255,7 @@ function status(kind, msg, extra) {
 }
 
 // ── Run ─────────────────────────────────────────────────────────────
-const STAGES = ['Reading the complete resume', 'Building the requirement matrix', 'Checking evidence for every requirement', 'Rewriting the Professional Summary', 'Rewriting the two most recent projects', 'Optimizing skills and Environment lines', 'Validating facts', 'Rendering and checking page count', 'Scoring the final resume'];
+const STAGES = ['Reading the complete resume', 'Measuring two-line bullet length', 'Building the requirement matrix', 'Checking evidence for every requirement', 'Rewriting the Professional Summary', 'Rewriting the two most recent projects', 'Optimizing skills and Environment lines', 'Validating facts', 'Fitting every bullet to 2 full lines', 'Rendering and checking page count', 'Scoring the final resume'];
 $('go').onclick = async () => {
   const btn = $('go'); btn.disabled = true;
   const t0 = Date.now(); let i = 0;
@@ -282,10 +283,10 @@ function renderResults(r) {
   $('resTitle').textContent = `${v.candidate.name} → ${v.jdTitle || 'tailored resume'} · ${v.domain.label}`;
   const s = v.scores;
   set($('stats'), 
-    stat('Keyword coverage', pct(s.after.keywordCoverage), `before ${pct(s.before.keywordCoverage)}`),
-    stat('Qualification match', pct(s.after.qualificationMatch), `before ${pct(s.before.qualificationMatch)}`),
-    stat('Supported alignment', pct(s.after.supportedAlignment), `target ${s.target}% · ${s.targetMet ? 'met' : 'not met'}`),
-    stat('Critical requirements', `${s.criticalCovered}/${s.criticalTotal}`, 'covered with evidence'),
+    stat('Supported keyword coverage', pct(s.after.supportedKeywordCoverage ?? s.after.supportedAlignment), `target ${s.target}% · before ${pct(s.before.supportedKeywordCoverage ?? s.before.supportedAlignment)}`),
+    stat('JD keyword coverage', pct(s.after.keywordCoverage), `before ${pct(s.before.keywordCoverage)} · ${s.needsConfirmation || 0} awaiting confirmation`),
+    stat('Qualification match', pct(s.after.qualificationMatch), 'verified experience only'),
+    stat('JD extraction', pct(s.after.extractionCompleteness ?? 100), `${s.explicitTerms || 0} explicit JD terms evaluated`),
   );
   const val = v.validation;
   const pageOk = val.pagesOk;
@@ -293,7 +294,9 @@ function renderResults(r) {
     el('div', { class: 'row' },
       el('span', { class: `pill ${pageOk ? 'good' : val.pageCountVerified ? 'warn' : 'bad'}`, text: val.pageCountVerified ? `${val.pageCount} page(s) rendered / ${val.requiredPages} required` : 'page count not verified' }),
       el('span', { class: `pill ${val.formatting.issues.length ? 'warn' : 'good'}`, text: val.formatting.issues.length ? `${val.formatting.issues.length} formatting note(s)` : 'Calibri 10 · single spacing · no blank lines' }),
-      el('span', { class: `pill ${val.lockedProjectsIntact ? 'good' : 'bad'}`, text: val.lockedProjectsIntact ? 'Protected projects unchanged' : 'Protected projects changed!' })),
+      el('span', { class: `pill ${val.lockedProjectsIntact ? 'good' : 'bad'}`, text: val.lockedProjectsIntact ? 'Protected projects unchanged' : 'Protected projects changed!' }),
+      val.twoLineBullets ? el('span', { class: `pill ${val.twoLineBullets.passed === val.twoLineBullets.checked ? 'good' : 'warn'}`, text: `Two-line check: ${val.twoLineBullets.passed}/${val.twoLineBullets.checked} bullets (${val.twoLineBullets.window.lo}–${val.twoLineBullets.window.hi} chars)` }) : null),
+    val.twoLineBullets && val.twoLineBullets.failed.length ? el('details', {}, el('summary', { text: `Bullets not exactly 2 full lines (${val.twoLineBullets.failed.length})` }), el('ul', { class: 'list small' }, val.twoLineBullets.failed.map(f => el('li', { text: `[${f.section}] ${f.lines} line(s), last line ${Math.round((f.lastLineFill || 0) * 100)}% full — ${f.text.slice(0, 90)}…` })))) : null,
     val.warnings.length ? el('ul', { class: 'list small' }, val.warnings.map(w => el('li', { text: w }))) : el('div', { class: 'small muted', style: 'margin-top:6px', text: 'No warnings.' }),
     val.formatting.issues.length ? el('ul', { class: 'list small muted' }, val.formatting.issues.map(w => el('li', { text: w }))) : null,
   );
@@ -303,7 +306,7 @@ function renderResults(r) {
   );
   renderPreview(v); renderMatrix(v); renderChanges(r); renderConfirm(v);
   setTab('preview');
-  status('ok', `Done. Supported alignment ${pct(s.after.supportedAlignment)} (target ${s.target}%).`);
+  status('ok', `Done. Supported keyword coverage ${pct(s.after.supportedKeywordCoverage ?? s.after.supportedAlignment)} (target ${s.target}%). ${(v.confirmationQueue || []).length} JD skill(s) are waiting for confirmation in the "Confirm experience" tab.`);
 }
 
 function renderPreview(v) {
@@ -328,17 +331,20 @@ function renderPreview(v) {
 }
 
 function renderMatrix(v) {
-  const cls = s => ({ verified: 'good', confirmed: 'good', transferable: 'warn', unsupported: 'bad' }[s] || '');
-  set($('t_matrix'), 
-    el('div', { class: 'small muted', text: v.scores.formula }),
-    el('table', { style: 'margin-top:10px' },
-      el('thead', {}, el('tr', {}, ['Requirement', 'Priority', 'Status', 'Shown in', 'Score', 'Evidence'].map(h => el('th', { text: h })))),
-      el('tbody', {}, v.requirements.map(r => el('tr', {},
-        el('td', { text: r.requirement }), el('td', { text: r.priority }),
-        el('td', {}, el('span', { class: `pill ${cls(r.supportStatus)}`, text: r.supportStatus })),
-        el('td', { text: { summary: 'Summary', recent: 'Recent project', other: 'Elsewhere', none: '—' }[r.resumeSection] }),
-        el('td', { text: `${r.scoreContribution}/${r.maxContribution}` }),
-        el('td', { class: 'small muted', text: (r.evidenceSource || '').slice(0, 160) }))))));
+  const m = v.coverageMatrix;
+  const cls = s => ({ Covered: 'good', 'Partially covered': 'warn', Missing: 'bad', 'Needs confirmation': 'bad', 'Related experience only': 'warn' }[s] || '');
+  const mark = c => !c ? '' : c.applicable ? (c.present ? '✓' : '✗') : (c.present ? '·✓' : '—');
+  const order = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+  const rows = [...m.rows].sort((a, b) => order[a.priority] - order[b.priority]);
+  set($('t_matrix'),
+    el('div', { class: 'small muted', text: '✓ present · ✗ missing where it belongs · — not applicable (no evidence for that section). ' + v.scores.formula }),
+    el('div', { style: 'overflow-x:auto' }, el('table', { style: 'margin-top:10px' },
+      el('thead', {}, el('tr', {}, ['JD keyword', 'Priority', 'Evidence', ...m.sections.map(x => x.label), 'Final status'].map(h => el('th', { text: h })))),
+      el('tbody', {}, rows.map(r => el('tr', {},
+        el('td', { text: r.keyword || r.requirement }), el('td', { text: r.priority }),
+        el('td', { class: 'small', text: r.supportStatus }),
+        ...m.sections.map(x => el('td', { style: 'text-align:center', text: mark(r.cells[x.key]) })),
+        el('td', {}, el('span', { class: `pill ${cls(r.finalStatus)}`, text: r.finalStatus }))))))));
 }
 
 function renderChanges(r) {
@@ -347,22 +353,31 @@ function renderChanges(r) {
 
 async function renderConfirm(v) {
   const box = $('t_confirm');
-  const gaps = [...v.unsupportedSkills.map(u => u.requirement), ...v.transferableSkills.map(t => t.requirement)];
-  const form = el('form', { class: 'grid2' });
-  const skill = el('input', { type: 'text', id: 'c_skill', required: 'required', placeholder: 'e.g. EDI X12 837/835' });
-  const proj = el('select', { id: 'c_proj' }, el('option', { value: '', text: 'General (summary & skills only)' }), v.projects.map(p => el('option', { value: p.id, text: `${p.client}${p.dates ? ` · ${p.dates}` : ''}` })));
-  const ev = el('textarea', { id: 'c_ev', style: 'min-height:90px', required: 'required', placeholder: 'What did the candidate actually build, and how was this skill used? (shown to the AI as evidence)' });
+  const queue = v.confirmationQueue || [];
+  $('confirmTabBtn').textContent = queue.length ? `Confirm experience (${queue.length})` : 'Confirm experience';
+  const projOpts = () => [el('option', { value: '', text: 'General (summary & skills)' }), ...v.projects.filter(p => p.editable).map(p => el('option', { value: p.id, text: p.client })), ...v.projects.filter(p => !p.editable).map(p => el('option', { value: p.id, text: `${p.client} (protected)` }))];
+  const rowsUi = queue.map(q => {
+    const cb = el('input', { type: 'checkbox' });
+    const proj = el('select', {}, projOpts());
+    if (v.projects[0]) proj.value = v.projects[0].id;
+    const desc = el('input', { type: 'text', placeholder: 'What he built with it (short)' });
+    desc.oninput = () => { cb.checked = desc.value.trim().length >= 10; };
+    return { q, cb, proj, desc, tr: el('tr', {}, el('td', {}, cb), el('td', {}, el('strong', { text: q.keyword }), el('div', { class: 'small muted', text: `${q.priority}${q.note ? ` · related: ${q.note.slice(0, 80)}` : ''}` })), el('td', {}, proj), el('td', {}, desc)) };
+  });
   const msg = el('div');
-  form.append(
-    el('div', {}, el('label', { for: 'c_skill', text: 'Skill' }), skill, el('label', { for: 'c_proj', text: 'Project where it was used' }), proj),
-    el('div', {}, el('label', { for: 'c_ev', text: 'Evidence (required)' }), ev, el('div', { style: 'margin-top:10px' }, el('button', { class: 'primary', type: 'submit', text: 'Save confirmation' })), msg));
-  form.onsubmit = async e => {
-    e.preventDefault();
+  const go = el('button', { class: 'primary', type: 'button', text: 'Confirm selected & regenerate' });
+  const saveOnly = el('button', { type: 'button', text: 'Save only' });
+  async function save(regen) {
+    const items = rowsUi.filter(r => r.cb.checked).map(r => ({ skill: r.q.keyword, projectId: r.proj.value || null, evidence: r.desc.value.trim() }));
+    if (!items.length) { set(msg, el('div', { class: 'alert err', text: 'Tick at least one skill and add a short description of the real experience.' })); return; }
     try {
-      await api(`/api/candidates/${encodeURIComponent(v.candidate.id)}/confirmations`, { method: 'POST', json: { skill: skill.value, projectId: proj.value || null, evidence: ev.value } });
-      set(msg, el('div', { class: 'alert ok', text: 'Saved. Run the tailoring again to use it.' })); skill.value = ''; ev.value = ''; listConfs();
+      const r = await api(`/api/candidates/${encodeURIComponent(v.candidate.id)}/confirmations/batch`, { method: 'POST', json: { items } });
+      set(msg, el('div', { class: `alert ${r.errors.length ? 'err' : 'ok'}`, text: `Saved ${r.saved.length} confirmation(s).${r.errors.length ? ` ${r.errors.length} skipped: ${r.errors.map(e => e.skill).join(', ')}` : ''}` }));
+      listConfs();
+      if (regen && r.saved.length) { $('candidate').value = v.candidate.id; await loadCandidates(); $('candidate').value = v.candidate.id; $('go').click(); }
     } catch (err) { set(msg, el('div', { class: 'alert err', text: err.message })); }
-  };
+  }
+  go.onclick = () => save(true); saveOnly.onclick = () => save(false);
   const confList = el('div');
   async function listConfs() {
     try {
@@ -372,10 +387,11 @@ async function renderConfirm(v) {
         el('td', {}, el('button', { text: 'Remove', onclick: async () => { await api(`/api/candidates/${encodeURIComponent(v.candidate.id)}/confirmations/${c.id}`, { method: 'DELETE' }); listConfs(); } })))))) : el('div', { class: 'small muted', text: 'No confirmed skills yet.' }));
     } catch {}
   }
-  set(box, 
-    el('div', { class: 'small muted', text: 'Only confirm experience the candidate genuinely has. Confirmations are stored for this candidate only and reused in future runs.' }),
-    gaps.length ? el('div', { class: 'row', style: 'margin:10px 0' }, el('span', { class: 'small muted', text: 'Quick pick:' }), gaps.map(g => el('button', { type: 'button', text: g, onclick: () => { skill.value = g; ev.focus(); } }))) : null,
-    form, el('h3', { text: 'Confirmed skills for this candidate' }), confList);
+  set(box,
+    el('div', { class: 'small muted', text: 'These JD skills are not shown in the master resume. Tick only what the candidate has really used, pick the project, and add a short description — confirmed skills are written into the Summary, Technical Skills and that project on regeneration, and saved for future runs. Unticked skills stay out of the resume.' }),
+    queue.length ? el('div', { style: 'overflow-x:auto' }, el('table', { style: 'margin-top:10px' }, el('thead', {}, el('tr', {}, ['', 'JD skill', 'Project', 'Experience (short)'].map(h => el('th', { text: h })))), el('tbody', {}, rowsUi.map(r => r.tr)))) : el('div', { class: 'alert ok', text: 'Nothing waiting for confirmation — every JD skill is supported.' }),
+    queue.length ? el('div', { class: 'row', style: 'margin-top:12px' }, go, saveOnly) : null, msg,
+    el('h3', { text: 'Confirmed skills for this candidate' }), confList);
   listConfs();
 }
 

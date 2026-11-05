@@ -56,9 +56,15 @@ async function countPages(docxBuffer) {
   }
 }
 
+/** DOCX → PDF buffer, or null when LibreOffice is unavailable. */
+async function toPdf(docxBuffer) {
+  if (!(await isAvailable())) return null;
+  return convert(docxBuffer, '.docx', 'pdf');
+}
+
 async function docToDocx(buffer) {
   if (!(await isAvailable())) throw Object.assign(new Error('.doc files need LibreOffice on the server to convert. Please upload a .docx instead.'), { code: 'UNSUPPORTED_FORMAT' });
   return convert(buffer, '.doc', 'docx:"MS Word 2007 XML"');
 }
 
-module.exports = { countPages, docToDocx, isAvailable };
+module.exports = { countPages, docToDocx, isAvailable, toPdf };

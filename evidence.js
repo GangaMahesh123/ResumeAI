@@ -2,7 +2,7 @@
 // Evidence engine: decides what the candidate can truthfully claim, and
 // guards AI output so no unsupported technology reaches the resume.
 
-const { LIBRARY, hasTerm, hasAny, allNames, findLibraryTerms } = require('./domains');
+const { LIBRARY, hasTerm, hasAny, allNames, findLibraryTerms, sameTech } = require('./domains');
 
 const PRIORITIES = ['Critical', 'High', 'Medium', 'Low'];
 const NON_TECH_CATEGORIES = new Set(['responsibility', 'experience_years', 'other']);
@@ -27,7 +27,7 @@ function projectSourceText(project) {
  * Normalise the AI requirement matrix and RE-VERIFY every status in code,
  * so the AI cannot mark something "verified" that the resume doesn't show.
  */
-function normalizeRequirements(rawReqs, { model, confirmations, jdText }) {
+function normalizeRequirements(rawReqs, { model, confirmations, jdText, explicitTerms = [] }) {
   const out = [];
   const seen = new Set();
   const list = Array.isArray(rawReqs) ? rawReqs : [];
@@ -63,6 +63,22 @@ function normalizeRequirements(rawReqs, { model, confirmations, jdText }) {
         terms: names, yearsRequired: null, aiStatus: '', evidenceNote: '', relatedEvidence: '', source: 'library',
       });
     }
+  }
+
+  // Completeness: every explicit JD technical term must be evaluated.
+  for (const x of explicitTerms) {
+    const covered = out.some(r => r.terms.some(t => sameTech(t, x.term)));
+    if (!covered) {
+      // Compound terms ("Azure Cloud Architecture", "MCP Automation") are backed by their core technology.
+      const core = findLibraryTerms(x.term).filter(e => e.term.length >= 2).flatMap(e => allNames(e)).filter(n => n.toLowerCase() !== x.term.toLowerCase());
+      out.push({
+        id: `jd_${out.length + 1}`, name: x.term, category: 'other_tech', priority: x.priority, mandatory: x.priority === 'Critical',
+        terms: [x.term, ...core], yearsRequired: null, aiStatus: '', evidenceNote: '', relatedEvidence: '', source: 'jd-extraction',
+      });
+    }
+  }
+  for (const r of out) {
+    r.explicit = explicitTerms.some(x => r.terms.some(t => sameTech(t, x.term)));
   }
 
   for (const r of out) verifyRequirement(r, { model, confirmations });

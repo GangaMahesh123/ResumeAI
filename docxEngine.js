@@ -213,6 +213,18 @@ function applyRewrite(state, rewrite, { editable, settings, boldExtra = [] }) {
     }
   }
 
+  // Drop empty paragraphs at the very end (they can spill onto a blank last page).
+  let end = blocks.length;
+  while (end > 0) {
+    const b = blocks[end - 1];
+    if (b.type === 'sectPr' || b.type === 'raw') { end--; continue; }
+    break;
+  }
+  let cut = end;
+  while (cut > 0 && blocks[cut - 1].type === 'p' && !cleanText(blocks[cut - 1].text || paragraphText(blocks[cut - 1].xml)) &&
+         !/<w:sectPr|<w:drawing|<w:pict|<w:object/.test(blocks[cut - 1].xml)) cut--;
+  if (cut < end) blocks = [...blocks.slice(0, cut), ...blocks.slice(end)];
+
   const newXml = joinBody({ prefix: body.prefix, blocks, suffix: body.suffix });
   zip.updateFile('word/document.xml', Buffer.from(newXml, 'utf-8'));
   return { buffer: zip.toBuffer(), documentXml: newXml, warnings };

@@ -270,7 +270,15 @@ function domainFocus(domain) {
   return DOMAIN_FOCUS[domain] || DOMAIN_FOCUS.dotnet;
 }
 
+/** True when two names refer to the same technology (identical or library synonyms). */
+function sameTech(a, b) {
+  const x = String(a).toLowerCase().trim(), y = String(b).toLowerCase().trim();
+  if (x === y) return true;
+  return LIBRARY.some(e => { const n = allNames(e).map(v => v.toLowerCase()); return n.includes(x) && n.includes(y); });
+}
+
 module.exports = {
+  sameTech,
   LIBRARY, hasTerm, hasAny, countTerm, findLibraryTerms, detectDomain,
   DOMAIN_LABEL, domainFocus, allNames
 };

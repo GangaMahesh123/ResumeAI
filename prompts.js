@@ -89,8 +89,9 @@ WRITING RULES:
 - Domain focus for this JD: ${domainFocus(domain)}
 - Professional Summary: completely rewrite it for this JD. At least ${settings.summaryMinBullets} distinct technical bullets, most important JD requirements first, group bullets by topic (architecture/backend, then frontend, data, cloud, AI, testing, DevOps), no duplicates, no generic filler. Mention the candidate's business domains.
 - Editable projects (${editableList}): rewrite, merge, reorder and improve the responsibilities — do not just append. At least ${settings.projectMinBullets} detailed technical bullets each. Cover what was built, architecture, technologies and how they were used, integrations, data, security/performance, testing, deployment and outcomes. The second project should complement the first, not repeat it.
-- Every bullet: one sentence, approximately 1 to 1.5 lines at Calibri 10 (about 150–230 characters), ATS-friendly, starts with a strong past-tense verb (current project may use past tense too), no markdown, no bullet symbols.
-- Use the JD's exact wording for technologies the candidate genuinely has.
+- ${settings.lengthWindow ? `EVERY bullet (summary and projects) MUST be between ${settings.lengthWindow.lo} and ${settings.lengthWindow.hi} characters including spaces — in this resume's layout that fills exactly TWO COMPLETE LINES. Count characters carefully; bullets shorter than ${settings.lengthWindow.lo} leave a half-empty second line and will be rejected.` : 'Every bullet: approximately 1 to 1.5 lines at Calibri 10 (about 150–230 characters).'} One sentence, ATS-friendly, starts with a strong past-tense verb, no markdown, no bullet symbols.
+- COVERAGE RULE (target 100%): every "verified" or "confirmed" requirement must appear, using the JD's exact keyword, in (a) the Professional Summary, (b) Technical Skills, and (c) the bullets AND Environment of EVERY editable project named in its evidence list. Weave related keywords together into meaningful bullets (several technologies per bullet where natural) — never one bullet per keyword, never keyword stuffing.
+- "unsupported" and "transferable" requirements must NOT be claimed as hands-on work anywhere; they go to the candidate confirmation queue.
 - Technical Skills: reorder categories and items by JD relevance (most relevant first), keep every existing verified skill unless it is a pure duplicate, add only verified/confirmed skills. If you drop an existing item, list it in skillsRemoved with a reason.
 - Environment for each editable project: the technologies actually used in that project's rewritten bullets plus its relevant existing environment; realistic versions; do not paste every JD technology.
 - Return ONLY JSON.`
@@ -98,7 +99,7 @@ WRITING RULES:
     .replace('{YEARS_FLOOR}', resumeJson.totalExperienceYears ? String(Math.floor(resumeJson.totalExperienceYears)) : 'N');
 
   const reqs = (analysis.requirements || []).map(r =>
-    `- [${r.priority}] ${r.name} (${r.status}${r.evidenceProjects && r.evidenceProjects.length ? `; in ${r.evidenceProjects.join(',')}` : ''}${r.relatedEvidence ? `; related: ${r.relatedEvidence}` : ''})`
+    `- [${r.priority}] ${r.name} — JD keyword "${r.terms[0]}" (${r.status}${r.evidenceProjects && r.evidenceProjects.length ? `; evidence in ${r.evidenceProjects.join(',')}` : r.status === 'verified' || r.status === 'confirmed' ? '; summary/skills only' : ''}${r.relatedEvidence ? `; related: ${r.relatedEvidence}` : ''})`
   ).join('\n');
 
   const user = `${wrap('resume', JSON.stringify(resumeJson, null, 1))}
@@ -139,4 +140,20 @@ ${wrap('resume', JSON.stringify(sectionsJson, null, 1))}`;
   return { system, user };
 }
 
-module.exports = { analysisPrompt, rewritePrompt, layoutPrompt, confirmationsText };
+// ── Exact-length repair ───────────────────────────────────────────────
+function fitPrompt({ items }) {
+  const system = `You resize resume bullets to an exact character length without changing facts. ${INJECTION_GUARD}
+Rules: keep every technology name, version, metric and fact; never add a technology, tool, client or number that is not already in the bullet; to lengthen, add detail about how the work was done, its purpose or outcome using only what the bullet already implies; to shorten, remove filler words; one sentence; no markdown. Each item gives a target range in characters INCLUDING spaces — hit it. Return ONLY JSON: {"bullets":[{"id":"...","text":"..."}]}`;
+  const user = `Resize each bullet to its target length.\n${wrap('resume', JSON.stringify(items.map(i => ({ id: i.id, currentLength: i.text.length, targetMin: i.lo, targetMax: i.hi, text: i.text })), null, 1))}`;
+  return { system, user };
+}
+
+// ── Add bullets to reach the page target ──────────────────────────────
+function expandPrompt({ count, window, sectionsJson, jdText }) {
+  const system = `You add resume bullets that elaborate work the candidate ALREADY did in each project, to fill the page. ${INJECTION_GUARD}
+Rules: only technologies, clients and facts already present in that same project's bullets or environment (for the summary: anywhere in the resume); no new tools or numbers; prefer details relevant to the job description; each new bullet ${window ? `between ${window.lo} and ${window.hi} characters including spaces (exactly two full lines)` : 'about 2 lines'}; one sentence; no duplicates of existing bullets; no markdown. Return ONLY JSON: {"professionalSummary":["new bullet"],"projects":[{"projectId":"...","newBullets":["..."]}]}`;
+  const user = `Add ${count} new bullet(s) in total, spread across the projects (and the summary if useful).\n${wrap('job_description', jdText)}\n${wrap('resume', JSON.stringify(sectionsJson, null, 1))}`;
+  return { system, user };
+}
+
+module.exports = { analysisPrompt, rewritePrompt, layoutPrompt, fitPrompt, expandPrompt, confirmationsText };
