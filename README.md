@@ -1,124 +1,77 @@
-# ResumeAI — Resume Optimizer
+# ResumeAI V2 — JD-specific resume tailoring
 
-AI-powered resume optimizer that adds missing keywords from job descriptions to achieve 92–95% ATS match — without removing any existing content.
+One universal engine for **.NET / Full Stack**, **Generative & Agentic AI**, **AI/ML / Data Science** and **hybrid** resumes. For every job description it rewrites the Professional Summary (18+ bullets), the two most recent projects (15+ bullets each), Technical Skills and Environment lines, keeps every older project byte-for-byte unchanged, verifies every claim against the candidate's real experience, renders the Word file to check the page count (target 6), and reports transparent scores.
 
----
-
-## Architecture
+## Pipeline
 
 ```
-Frontend (React/HTML artifact in Claude.ai)
-        ↕  REST API (JWT auth)
-Backend (Node.js + Express)
-        ↕  Claude claude-sonnet-4-20250514
-        ↕  File parsing (PDF, DOCX, TXT)
+Upload → parse complete resume → parse full JD → requirement matrix (Critical/High/Medium/Low)
+→ evidence per requirement (verified / confirmed / transferable / unsupported, re-checked in code)
+→ AI rewrite (summary, recent 2 projects, skills, environments)
+→ evidence guard (removes any technology the candidate can't show for that section)
+→ optimization passes (bounded) → DOCX → LibreOffice render → page/format validation → scores
 ```
 
----
+| Module | Purpose |
+|---|---|
+| `lib/xml.js` | WordprocessingML tokenizer (handles text split across runs, tabs, breaks, nested text boxes) |
+| `lib/resumeModel.js` | Structured resume model: header, summary, skills, projects ordered by **dates** (no hard-coded client names) |
+| `lib/domains.js` | .NET / GenAI / AI-ML technology libraries + domain detection (identify only, never add) |
+| `lib/evidence.js` | Requirement re-verification, per-project evidence guard, version and years checks |
+| `lib/scoring.js` | Explainable requirement-based scoring, 0–100, no floor/ceiling |
+| `lib/prompts.js` | Analysis / rewrite / layout prompts with prompt-injection guard |
+| `lib/schema.js` | Strict validation and safe repair of AI JSON |
+| `lib/docxEngine.js` | Replaces only editable sections; Calibri 10, single spacing, 0/0 pt, no blank lines |
+| `lib/render.js` | Headless LibreOffice DOCX→PDF page count; DOC→DOCX |
+| `lib/docxBuild.js` | PDF/TXT → standard-template DOCX, then the same engine |
+| `lib/tailor.js` | Orchestrates the whole workflow |
+| `lib/store.js` | Users, history, candidate profiles, confirmations (JSON file in `DATA_DIR`) |
+| `frontend/index.html` | Netlify UI: settings, dashboard, preview, requirement matrix, confirmations |
 
-## Backend Setup
+## Scoring
 
-### 1. Install dependencies
+- **Keyword Coverage** = requirements found in the resume ÷ all requirements.
+- **Qualification Match** = Σ(weight × support × visibility) ÷ Σweight.
+  - Weights: Critical 5, High 3, Medium 2, Low 1.
+  - Support: verified/confirmed 1, transferable 0.5, unsupported 0.
+  - Visibility: summary or recent project 1, elsewhere 0.75, not shown 0.4.
+- **Supported Alignment** = Qualification Match over verified/confirmed requirements only. This is the number the **98% target** applies to, because genuine gaps can't be optimized away.
+
+## Deploy — Railway (backend)
+
+1. Push this repo to GitHub. Railway detects the `Dockerfile` (it installs LibreOffice + Carlito for page counting).
+2. Railway → service → **Variables**: set `ANTHROPIC_API_KEY` and `JWT_SECRET` (see `.env.example` for optional ones).
+3. Railway → service → **Settings → Volumes**: add a volume mounted at `/app/data` so accounts and confirmations survive redeploys.
+4. Deploy. Check `https://<your-railway-domain>/health` → `aiConfigured: true`, `pageRenderer: true`.
+
+## Deploy — Netlify (frontend)
+
+- Connect the repo (uses `netlify.toml`, publishes `frontend/`), **or** drag the `frontend` folder into Netlify's deploy page.
+- The backend URL is set at the top of the script in `frontend/index.html` (`API = ...`). It can also be overridden with `?api=https://...` for testing.
+- The V1 response fields are kept, so the old frontend keeps working against this backend too.
+
+## API
+
+| Method | Endpoint | Notes |
+|---|---|---|
+| POST | `/api/auth/register` · `/api/auth/login` | unchanged |
+| GET | `/api/auth/me` | |
+| POST | `/api/resume/optimize` | multipart: `resume`, `jobDescription`, optional `settings` (JSON), `candidateId`, `domainOverride` |
+| GET | `/api/resume/history` | |
+| GET | `/api/candidates` · `/api/candidates/:id` | candidate profiles (isolated per user) |
+| POST | `/api/candidates/:id/confirmations` | `{ skill, projectId?, evidence }` — evidence required |
+| DELETE | `/api/candidates/:id/confirmations/:confId` | |
+| GET | `/api/settings/defaults` · `/health` | |
+
+Errors always return `{ success:false, error, code, requestId }`. AI failures return 502/503 and are **never** reported as "already well matched".
+
+## Local development & tests
+
 ```bash
-cd resume-optimizer-backend
 npm install
+cp .env.example .env   # add your key, then export the variables
+npm start              # http://localhost:3001
+npm test               # 19 acceptance tests (needs LibreOffice for the page-count tests)
 ```
 
-### 2. Environment variables
-Create a `.env` file:
-```
-ANTHROPIC_API_KEY=sk-ant-...
-JWT_SECRET=your-random-secret-string-here
-PORT=3001
-FRONTEND_URL=http://localhost:3000
-```
-
-### 3. Run
-```bash
-npm run dev       # development with hot reload
-npm start         # production
-```
-
----
-
-## API Reference
-
-### Auth
-
-| Method | Endpoint | Body | Description |
-|--------|----------|------|-------------|
-| POST | `/api/auth/register` | `{ name, email, password }` | Create account |
-| POST | `/api/auth/login` | `{ email, password }` | Login → returns JWT token |
-| POST | `/api/auth/logout` | — | Audit log logout |
-| GET | `/api/auth/me` | — | Get current user (requires Bearer token) |
-
-### Resume
-
-All resume endpoints require `Authorization: Bearer <token>` header.
-
-| Method | Endpoint | Body | Description |
-|--------|----------|------|-------------|
-| POST | `/api/resume/optimize` | `multipart/form-data: resume (file) + jobDescription (text)` | Optimize resume |
-| GET | `/api/resume/history` | — | List past optimizations |
-| GET | `/api/resume/history/:id` | — | Get full resume for a history entry |
-
-### Optimize Response
-```json
-{
-  "success": true,
-  "historyId": "opt_1234567890",
-  "optimizedResume": "Full optimized resume text...",
-  "matchScore": 93,
-  "changes": [
-    { "type": "added", "section": "Skills", "description": "Added React.js, TypeScript to match JD requirements" },
-    { "type": "modified", "section": "Experience", "description": "Enhanced bullet point to include 'cross-functional' keyword" }
-  ],
-  "keywordsAdded": 12,
-  "bulletsEnhanced": 5,
-  "sectionsImproved": 3,
-  "keywordsCovered": ["Python", "REST API", "Agile"],
-  "keywordsStillMissing": []
-}
-```
-
----
-
-## Frontend Integration
-
-The Claude.ai artifact frontend calls the Anthropic API directly. To wire it to this backend instead:
-
-1. Replace the `fetch('https://api.anthropic.com/v1/messages', ...)` call in the frontend with:
-```javascript
-const response = await fetch('http://localhost:3001/api/resume/optimize', {
-  method: 'POST',
-  headers: { 'Authorization': `Bearer ${token}` },
-  body: formData   // FormData with 'resume' file + 'jobDescription' text
-});
-```
-
-2. Store the JWT token from login in `localStorage` and attach it to all protected requests.
-
----
-
-## Production Checklist
-
-- [ ] Replace in-memory `db` with PostgreSQL or MongoDB
-- [ ] Add `helmet` middleware for security headers
-- [ ] Set a real `JWT_SECRET` in environment
-- [ ] Enable HTTPS (use nginx reverse proxy or deploy to Railway/Render)
-- [ ] Add input sanitization with `validator` or `zod`
-- [ ] Set up proper logging (Winston or Pino)
-- [ ] Store uploaded files in S3 if you want to persist them
-
----
-
-## Supported File Types
-
-| Format | Library Used |
-|--------|-------------|
-| `.txt` | Native Node.js Buffer |
-| `.pdf` | `pdf-parse` |
-| `.docx` | `mammoth` |
-| `.doc` | `mammoth` |
-
-Max upload size: **5MB**
+Tests use a deterministic mock in place of Claude; parsing, evidence guards, scoring, DOCX editing, page rendering and the HTTP API are real.
