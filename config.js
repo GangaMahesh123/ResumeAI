@@ -37,6 +37,7 @@ const config = {
     projectMinBullets: 15,
     preserveFacts: true,
     exactTwoLineBullets: true,
+    matchJobTitle: true,
     domainOverride: '',
   },
 };

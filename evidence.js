@@ -35,6 +35,9 @@ function normalizeRequirements(rawReqs, { model, confirmations, jdText, explicit
     if (!r || typeof r !== 'object') continue;
     const name = str(r.name);
     if (!name || seen.has(name.toLowerCase())) continue;
+    // Logistics, soft skills and contact details are not resume keywords.
+    const { NON_TECH, CONTACT_LINE } = require('./jdTerms');
+    if (str(r.category) !== 'experience_years' && (NON_TECH.test(name) || CONTACT_LINE.test(name) || /^\d/.test(name))) continue;
     seen.add(name.toLowerCase());
     const terms = [...new Set([name, ...(Array.isArray(r.terms) ? r.terms : [])].map(str).filter(t => t && t.length <= 60))];
     out.push({

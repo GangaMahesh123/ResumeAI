@@ -200,6 +200,14 @@ function applyRewrite(state, rewrite, { editable, settings, boldExtra = [] }) {
     }
   }
 
+  // Headline (target role title under the name): keep paragraph and run formatting.
+  if (rewrite.headline && model.header.titleIdx !== null && model.header.titleIdx !== undefined) {
+    const b = blocks[model.header.titleIdx];
+    const pPr = getPPr(b.xml);
+    const rPr = getFirstRunRPr(b.xml);
+    b.xml = `<w:p>${pPr}<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(rewrite.headline)}</w:t></w:r></w:p>`;
+  }
+
   // Apply bottom-up so indexes stay valid.
   ops.sort((a, b) => b.first - a.first);
   for (const op of ops) {

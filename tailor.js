@@ -15,7 +15,7 @@ const { analysisPrompt, rewritePrompt, layoutPrompt } = require('./prompts');
 const { normalizeRequirements, guardRewrite, enforceGuard, versionWarnings, fixYears, projectSourceText } = require('./evidence');
 const { validateRewrite, preserveSkills } = require('./schema');
 const { scoreResume, underrepresented } = require('./scoring');
-const { extractExplicitTerms } = require('./jdTerms');
+const { extractExplicitTerms, NON_TECH, CONTACT_LINE } = require('./jdTerms');
 const { closeGaps } = require('./coverage');
 const { applyRewrite, lockedSectionsIntact, setMargins, getMargins, auditFormatting } = require('./docxEngine');
 const render = require('./render');
@@ -44,6 +44,7 @@ function mergeSettings(input) {
     projectMinBullets: clamp(s.projectMinBullets, 5, 40, d.projectMinBullets),
     preserveFacts: true, // always on — cannot be disabled
     exactTwoLineBullets: bool(s.exactTwoLineBullets, true),
+    matchJobTitle: bool(s.matchJobTitle, true),
     domainOverride: ['dotnet', 'genai', 'aiml', 'hybrid'].includes(s.domainOverride) ? s.domainOverride : '',
     editableProjectIds: Array.isArray(s.editableProjectIds) ? s.editableProjectIds.map(String).slice(0, config.maxEditableProjects) : null,
   };
@@ -251,6 +252,10 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
   // 7. Enforce facts: strip whatever is still unsupported.
   const removedClaims = enforceGuard(best.rewrite, violations);
   const rewrite = best.rewrite;
+  // Headline under the name = the JD's role title (past job titles are never changed).
+  const cleanTitle = t => String(t || '').replace(/^(job\s*title|position|role|title)\s*:\s*/i, '').replace(/\s*[(\[][^)\]]*(remote|onsite|on-site|hybrid|contract|full[- ]time|w2|c2c|location)[^)\]]*[)\]]/ig, '').split(/\s+\|\s+|\s+@\s+/)[0].replace(/\s+/g, ' ').trim();
+  const headline = cleanTitle(analysis.jdTitle);
+  if (settings.matchJobTitle && headline && headline.length <= 90 && model.header.titleIdx !== null) rewrite.headline = headline;
   warnings.push(...firstDraftWarnings, ...best.warnings);
   if (removedClaims.length) warnings.push(`${removedClaims.length} statement(s) were removed because they named technologies without supporting evidence.`);
   warnings.push(...versionWarnings(rewrite, editable));
@@ -390,6 +395,7 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
 
   const changes = [];
   if (settings.rewriteSummary && model.summary) changes.push({ type: 'modified', section: 'Professional Summary', description: `Professional Summary rewritten: ${model.summary.bullets.length} → ${finalModel.summary ? finalModel.summary.bullets.length : 0} bullets` });
+  if (rewrite.headline && rewrite.headline !== model.header.title) changes.push({ type: 'modified', section: 'Header', description: `Headline changed to the JD title: "${model.header.title}" → "${rewrite.headline}"` });
   if (settings.optimizeSkills && model.skills) changes.push({ type: 'modified', section: 'Technical Skills', description: `Technical Skills reordered by JD relevance (${rewrite.technicalSkills.length} categories)` });
   for (const p of editable) {
     const fp = finalModel.projects.find(x => x.id === p.id);
@@ -414,7 +420,8 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
       sections: [{ key: 'summary', label: 'Professional Summary' }, ...editable.map(p => ({ key: `project:${p.id}`, label: p.client })), { key: 'skills', label: 'Technical Skills' }, ...editable.map(p => ({ key: `env:${p.id}`, label: `Environment — ${p.client}` }))],
       rows: after.rows,
     },
-    confirmationQueue: after.rows.filter(r => r.finalStatus === 'Needs confirmation' || r.finalStatus === 'Related experience only')
+    confirmationQueue: after.rows.filter(r => (r.finalStatus === 'Needs confirmation' || r.finalStatus === 'Related experience only') &&
+        !['responsibility', 'experience_years'].includes(r.category) && !NON_TECH.test(r.keyword) && !CONTACT_LINE.test(r.keyword))
       .map(r => ({ requirement: r.requirement, keyword: r.keyword, priority: r.priority, status: r.supportStatus, note: r.supportStatus === 'transferable' ? r.evidenceSource : '' }))
       .sort((a, b) => ({ Critical: 0, High: 1, Medium: 2, Low: 3 }[a.priority] - { Critical: 0, High: 1, Medium: 2, Low: 3 }[b.priority])),
     scores: {
@@ -433,6 +440,8 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
     transferableSkills: [...transferable.map(r => ({ requirement: r.name, relatedExperience: r.evidence })), ...rewrite.transferableSkills.filter(t => !transferable.some(r => r.name === t.requirement))].slice(0, 30),
     unsupportedSkills: unsupportedReqs.map(r => ({ requirement: r.name, priority: r.priority })),
     preview: {
+      headline: finalModel.header.title || '',
+      originalHeadline: model.header.title || '',
       professionalSummary: finalModel.summary ? finalModel.summary.bullets : [],
       technicalSkills: finalModel.skills ? finalModel.skills.rows : [],
       projects: finalModel.projects.filter(p => editableIds.includes(p.id)).map(p => ({ id: p.id, client: p.client, role: p.role, dates: p.dates ? p.dates.raw : '', bullets: p.bullets, environment: p.environment })),

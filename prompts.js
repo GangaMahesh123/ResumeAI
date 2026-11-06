@@ -35,7 +35,7 @@ Rules:
 - Never mark something verified because it is merely plausible. Be strict.
 - evidenceProjects: projectIds where the evidence appears (empty if only in summary/skills).
 - For "years" requirements set category "experience_years" and "yearsRequired".
-- Ignore recruiter/company contact details, addresses, phone numbers, emails, links and application instructions — they are not requirements.
+- Ignore work logistics and soft requirements that are not skills (availability, weekend/evening work, shifts, location, travel, visa, communication skills) and recruiter/company contact details, addresses, phone numbers, emails, links and application instructions — they are not requirements.
 - Be concise: at most 45 requirements (merge near-duplicates), at most 4 terms each, "evidence" and "relatedEvidence" at most 12 words. No text outside the JSON.
 Return ONLY JSON.`;
 

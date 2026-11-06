@@ -31,16 +31,26 @@ function cleanTerm(t) {
   return s;
 }
 
+const SIGNATURE_START = /^(thanks|thank you|regards|best regards|warm regards|kind regards|sincerely|cheers|interested candidates|please share|please send|contact\s*:?$|recruiter)\b/i;
+const CONTACT_LINE = /@|https?:\/\/|www\.|linkedin|\b\d{3}[-.\s)]\s?\d{3}[-.\s]\d{4}\b|\b\d{5}(-\d{4})?\b|\b(suite|road|rd\.|street|st\.|avenue|ave\.?|blvd|drive|floor|ext\.?)\b|\b(inc|llc|ltd|corp)\b\.?/i;
+const NON_TECH = /\b(availability|available|weekend|evening|overtime|on[- ]call|shift|travel|relocat|visa|citizen|clearance|onsite|on-site|hybrid work|remote|location|hours|communication|interpersonal|team player|self[- ]starter|degree|bachelor|master'?s|salary|rate|benefits)\b/i;
+
 const VAGUE = new Set(['ai', 'it', 'api', 'apis', 'ui', 'ux', 'sdlc', 'usa', 'us', 'mst', 'pst', 'est']);
 
-function looksTechnical(t) {
+function looksTechnical(t, { inList = false } = {}) {
   if (!t || t.length < 2 || t.length > 40) return false;
   if (VAGUE.has(t.toLowerCase())) return false;
+  if (/^\d/.test(t) || CONTACT_LINE.test(t) || NON_TECH.test(t)) return false;
   const words = t.split(/\s+/);
   if (words.length > 5) return false;
   if (words.every(w => GENERIC.has(w.toLowerCase()))) return false;
   // Proper nouns / acronyms / symbols are what make a term technical.
-  return /[A-Z]{2,}|[#+./]|[a-z][A-Z]|^[A-Z][a-z]+/.test(t) || findLibraryTerms(t).length > 0;
+  // Acronyms, symbols (C#, .NET, Node.js) or CamelCase signal technology; a lone
+  // capitalised word (a city, a company) does not unless it is a known technology.
+  if (findLibraryTerms(t).length > 0) return true;
+  if (/[A-Z]{2,}|[#+]|\.[A-Za-z]|[a-z][A-Z]/.test(t)) return true;
+  // Inside an explicit skill list ("Tools: Jira, Telerik") product names count.
+  return inList && /^[A-Z][A-Za-z0-9]+(\s[A-Z][A-Za-z0-9]+){0,2}$/.test(t);
 }
 
 function splitList(text) {
@@ -54,7 +64,7 @@ function extractExplicitTerms(jdText) {
   const out = new Map();
   const add = (term, priority, source) => {
     const t = cleanTerm(term);
-    if (!looksTechnical(t)) return;
+    if (!looksTechnical(t, { inList: source === 'skill list' })) return;
     const key = t.toLowerCase();
     const prev = out.get(key);
     const rank = { Critical: 0, High: 1, Medium: 2, Low: 3 };
@@ -63,14 +73,26 @@ function extractExplicitTerms(jdText) {
 
   let sectionPriority = 'Medium';
   let skipSection = false;
+  let inSignature = false;
   for (const raw of String(jdText).split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
+    if (SIGNATURE_START.test(line)) inSignature = true;
+    if (inSignature || CONTACT_LINE.test(line)) continue;
     const head = SECTION_PRIORITY.find(s => s.re.test(line.replace(/^[#*\s]+/, '')));
     const isHeading = head && line.length < 60 && !/,/.test(line);
     if (isHeading) { skipSection = head.priority === null; if (head.priority) sectionPriority = head.priority; continue; }
     if (skipSection) continue;
     const labelled = line.match(/^([^:]{2,50}):\s*(.+)$/);
+    if (labelled) {
+      const labelHead = SECTION_PRIORITY.find(h => h.re.test(labelled[1].trim()));
+      if (labelHead && labelHead.priority === null) continue;                    // Location:, Working hours:, Contact: …
+      if (/^(location|duration|rate|pay|salary|visa|work authorization|start date|client|job id|position|title|type|employment)\b/i.test(labelled[1].trim())) continue;
+      if (labelHead && labelHead.priority && (/,/.test(labelled[2]) || labelHead.priority === 'Critical')) {
+        splitList(labelled[2]).forEach(t => add(t, labelHead.priority === 'Medium' ? 'High' : labelHead.priority, 'skill list'));
+        continue;
+      }
+    }
     if (labelled && (/,/.test(labelled[2]) || sectionPriority !== 'Medium')) { splitList(labelled[2]).forEach(t => add(t, sectionPriority === 'Medium' ? 'High' : sectionPriority, 'skill list')); continue; }
     if ((line.match(/,/g) || []).length >= 1 || sectionPriority === 'Critical') {
       const body = line.replace(LEAD_IN, '').replace(/^(design|develop|build|implement|lead|apply|leverage|use|create)\s+(and\s+\w+\s+)?/i, '');
@@ -78,11 +100,12 @@ function extractExplicitTerms(jdText) {
     }
   }
   // Any known technology mentioned anywhere (catches prose mentions).
-  for (const e of findLibraryTerms(jdText)) {
+  const body = String(jdText).split(/\r?\n/).reduce((acc, l) => { if (SIGNATURE_START.test(l.trim())) acc.stop = true; if (!acc.stop && !CONTACT_LINE.test(l)) acc.text += `${l}\n`; return acc; }, { text: '', stop: false }).text;
+  for (const e of findLibraryTerms(body)) {
     const covered = [...out.values()].some(v => allNames(e).some(n => n.toLowerCase() === v.term.toLowerCase() || new RegExp(`(^|[^A-Za-z0-9])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9]|$)`, 'i').test(v.term)));
     if (!covered) add(e.term, 'Medium', 'library');
   }
   return [...out.values()];
 }
 
-module.exports = { extractExplicitTerms, cleanTerm };
+module.exports = { extractExplicitTerms, cleanTerm, looksTechnical, NON_TECH, CONTACT_LINE };

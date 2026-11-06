@@ -130,10 +130,10 @@ function createApp({ provider = createAnthropicProvider(), store = new Store(), 
   app.post('/api/candidates/:cid/confirmations', authMiddleware, (req, res) => {
     const { skill, projectId, evidence } = req.body || {};
     if (!skill || String(skill).trim().length < 2) return fail(res, req, 400, 'VALIDATION', 'Skill is required');
-    if (!evidence || String(evidence).trim().length < 10) return fail(res, req, 400, 'VALIDATION', 'Add a short description of the actual experience (at least 10 characters), e.g. "Built MCP servers for test automation".');
+    // The description is optional; ticking the skill is the recruiter's confirmation.
     if (String(skill).length > 80 || String(evidence).length > 1000) return fail(res, req, 400, 'VALIDATION', 'Skill or evidence is too long');
     try {
-      const conf = store.addConfirmation(req.user.userId, req.params.cid, { skill, projectId: projectId || null, evidence });
+      const conf = store.addConfirmation(req.user.userId, req.params.cid, { skill, projectId: projectId || null, evidence: String(evidence || '').trim() || 'Confirmed by recruiter' });
       res.status(201).json({ confirmation: conf });
     } catch (e) { fail(res, req, e.status || 500, 'CONFIRMATION', e.message); }
   });
@@ -144,12 +144,14 @@ function createApp({ provider = createAnthropicProvider(), store = new Store(), 
     if (!items.length) return fail(res, req, 400, 'VALIDATION', 'No confirmations supplied');
     const saved = [], errors = [];
     for (const it of items) {
-      const skill = String((it && it.skill) || '').trim(), evidence = String((it && it.evidence) || '').trim();
-      if (skill.length < 2 || evidence.length < 10 || skill.length > 80 || evidence.length > 1000) { errors.push({ skill, error: 'Skill and a short description (10+ characters) are required' }); continue; }
+      const skill = String((it && it.skill) || '').trim();
+      const evidence = String((it && it.evidence) || '').trim() || 'Confirmed by recruiter';
+      if (skill.length < 2 || skill.length > 80 || evidence.length > 1000) { errors.push({ skill, error: 'Invalid skill name or description too long' }); continue; }
       try { saved.push(store.addConfirmation(req.user.userId, req.params.cid, { skill, projectId: it.projectId || null, evidence })); }
       catch (e) { errors.push({ skill, error: e.message }); }
     }
-    res.status(saved.length ? 201 : 400).json({ saved, errors });
+    if (!saved.length) return fail(res, req, 400, 'VALIDATION', errors.map(e => `${e.skill}: ${e.error}`).join('; ') || 'Nothing to save', { saved, errors });
+    res.status(201).json({ saved, errors });
   });
 
   app.delete('/api/candidates/:cid/confirmations/:confId', authMiddleware, (req, res) => {

@@ -109,6 +109,7 @@ th{color:var(--muted);font-weight:500}
             <label><input type="checkbox" id="s_optimizeSkills" checked> Optimize skills</label>
             <label><input type="checkbox" id="s_reconcileEnvironment" checked> Reconcile Environment</label>
             <label><input type="checkbox" id="s_exactTwoLineBullets" checked> Every bullet exactly 2 full lines</label>
+            <label><input type="checkbox" id="s_matchJobTitle" checked> Headline = JD job title</label>
             <label><input type="checkbox" checked disabled> Older projects locked</label>
             <label><input type="checkbox" checked disabled> Preserve employment facts</label>
           </div>
@@ -242,7 +243,7 @@ async function loadCandidates() {
 
 function settings() {
   const s = {};
-  for (const k of ['rewriteSummary', 'rewriteProject1', 'rewriteProject2', 'optimizeSkills', 'reconcileEnvironment', 'exactTwoLineBullets']) s[k] = $(`s_${k}`).checked;
+  for (const k of ['rewriteSummary', 'rewriteProject1', 'rewriteProject2', 'optimizeSkills', 'reconcileEnvironment', 'exactTwoLineBullets', 'matchJobTitle']) s[k] = $(`s_${k}`).checked;
   for (const k of ['alignmentTarget', 'requiredPages', 'summaryMinBullets', 'projectMinBullets']) s[k] = Number($(`s_${k}`).value) || undefined;
   s.domainOverride = $('domain').value;
   return s;
@@ -331,7 +332,8 @@ function renderPreview(v) {
   const p = v.preview;
   const origSum = new Set(p.original.professionalSummary);
   const box = $('t_preview');
-  set(box, 
+  set(box,
+    p.headline ? el('h3', { text: `Headline: ${p.headline}${p.originalHeadline && p.originalHeadline !== p.headline ? `  (was: ${p.originalHeadline})` : ''}` }) : null,
     el('h3', { text: `Professional Summary (${p.professionalSummary.length} bullets — highlighted = new or rewritten)` }),
     el('ul', { class: 'bullets' }, p.professionalSummary.map(b => el('li', { class: origSum.has(b) ? '' : 'new', text: b }))),
     el('h3', { text: 'Technical Skills' }),
@@ -378,8 +380,8 @@ async function renderConfirm(v) {
     const cb = el('input', { type: 'checkbox' });
     const proj = el('select', {}, projOpts());
     if (v.projects[0]) proj.value = v.projects[0].id;
-    const desc = el('input', { type: 'text', placeholder: 'What he built with it (short)' });
-    desc.oninput = () => { cb.checked = desc.value.trim().length >= 10; };
+    const desc = el('input', { type: 'text', placeholder: 'Optional: what he built with it' });
+    desc.oninput = () => { if (desc.value.trim()) cb.checked = true; };
     return { q, cb, proj, desc, tr: el('tr', {}, el('td', {}, cb), el('td', {}, el('strong', { text: q.keyword }), el('div', { class: 'small muted', text: `${q.priority}${q.note ? ` · related: ${q.note.slice(0, 80)}` : ''}` })), el('td', {}, proj), el('td', {}, desc)) };
   });
   const msg = el('div');
@@ -387,7 +389,7 @@ async function renderConfirm(v) {
   const saveOnly = el('button', { type: 'button', text: 'Save only' });
   async function save(regen) {
     const items = rowsUi.filter(r => r.cb.checked).map(r => ({ skill: r.q.keyword, projectId: r.proj.value || null, evidence: r.desc.value.trim() }));
-    if (!items.length) { set(msg, el('div', { class: 'alert err', text: 'Tick at least one skill and add a short description of the real experience.' })); return; }
+    if (!items.length) { set(msg, el('div', { class: 'alert err', text: 'Tick at least one skill he has used.' })); return; }
     try {
       const r = await api(`/api/candidates/${encodeURIComponent(v.candidate.id)}/confirmations/batch`, { method: 'POST', json: { items } });
       set(msg, el('div', { class: `alert ${r.errors.length ? 'err' : 'ok'}`, text: `Saved ${r.saved.length} confirmation(s).${r.errors.length ? ` ${r.errors.length} skipped: ${r.errors.map(e => e.skill).join(', ')}` : ''}` }));
@@ -406,7 +408,7 @@ async function renderConfirm(v) {
     } catch {}
   }
   set(box,
-    el('div', { class: 'small muted', text: 'These JD skills are not shown in the master resume. Tick only what the candidate has really used, pick the project, and add a short description — confirmed skills are written into the Summary, Technical Skills and that project on regeneration, and saved for future runs. Unticked skills stay out of the resume.' }),
+    el('div', { class: 'small muted', text: 'JD skills not shown in the master resume. Tick each one the candidate has used and pick the project (a description is optional). Ticked skills are written into the Summary, Technical Skills and that project, and remembered for future runs.' }),
     queue.length ? el('div', { style: 'overflow-x:auto' }, el('table', { style: 'margin-top:10px' }, el('thead', {}, el('tr', {}, ['', 'JD skill', 'Project', 'Experience (short)'].map(h => el('th', { text: h })))), el('tbody', {}, rowsUi.map(r => r.tr)))) : el('div', { class: 'alert ok', text: 'Nothing waiting for confirmation — every JD skill is supported.' }),
     queue.length ? el('div', { class: 'row', style: 'margin-top:12px' }, go, saveOnly) : null, msg,
     el('h3', { text: 'Confirmed skills for this candidate' }), confList);

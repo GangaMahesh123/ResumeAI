@@ -106,10 +106,13 @@ function buildModel(body) {
     end: i + 1 < headings.length ? headings[i + 1].idx : blocks.length,
   }));
   const firstHeading = headings.length ? headings[0].idx : blocks.length;
-  const header = blocks.slice(0, firstHeading).filter(b => b.type === 'p' && b.text).map(b => b.text);
+  const headerBlocks = blocks.slice(0, firstHeading).filter(b => b.type === 'p' && b.text);
+  const header = headerBlocks.map(b => b.text);
+  const ROLE = /\b(developer|engineer|architect|lead|manager|analyst|consultant|scientist|programmer|administrator|specialist|designer|director|head|owner)\b/i;
+  const titleBlock = headerBlocks.slice(1, 4).find(b => b.text.length <= 90 && ROLE.test(b.text) && !/@|https?:|www\.|linkedin|\d{3}[-.\s]\d{3}[-.\s]\d{4}|:/i.test(b.text));
 
   const model = {
-    header: { name: header[0] || '', lines: header },
+    header: { name: header[0] || '', lines: header, titleIdx: titleBlock ? titleBlock.idx : null, title: titleBlock ? titleBlock.text : '' },
     sections: sections.map(s => ({ kind: s.kind, title: s.title, headingIdx: s.idx, start: s.start, end: s.end })),
     summary: null,
     skills: null,
