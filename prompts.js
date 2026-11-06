@@ -93,7 +93,8 @@ WRITING RULES:
 - Editable projects (${editableList}): rewrite, merge, reorder and improve the responsibilities — do not just append. At least ${settings.projectMinBullets} detailed technical bullets each. Cover what was built, architecture, technologies and how they were used, integrations, data, security/performance, testing, deployment and outcomes. The second project should complement the first, not repeat it.
 - ${settings.lengthWindow ? `EVERY bullet (summary and projects) MUST be between ${settings.lengthWindow.lo} and ${settings.lengthWindow.hi} characters including spaces — in this resume's layout that fills exactly TWO COMPLETE LINES. Count characters carefully; bullets shorter than ${settings.lengthWindow.lo} leave a half-empty second line and will be rejected.` : 'Every bullet: approximately 1 to 1.5 lines at Calibri 10 (about 150–230 characters).'} One sentence, ATS-friendly, starts with a strong past-tense verb, no markdown, no bullet symbols.
 - COVERAGE RULE (target 100%): every "verified" or "confirmed" requirement must appear, using the JD's exact keyword, in (a) the Professional Summary, (b) Technical Skills, and (c) the bullets AND Environment of EVERY editable project named in its evidence list. Weave related keywords together into meaningful bullets (several technologies per bullet where natural) — never one bullet per keyword, never keyword stuffing.
-- "unsupported" and "transferable" requirements must NOT be claimed as hands-on work anywhere; they go to the candidate confirmation queue.
+- "transferable" requirements: feature the candidate's RELATED experience prominently (in the Summary and in the project where it happened) using the precise names of what they did use, so the alignment is visible — but do not name the missing technology itself as hands-on work.
+- "unsupported" requirements are never claimed as hands-on work in the resume; they are handled as separate review drafts.
 - Technical Skills: reorder categories and items by JD relevance (most relevant first), keep every existing verified skill unless it is a pure duplicate, add only verified/confirmed skills. If you drop an existing item, list it in skillsRemoved with a reason.
 - Environment for each editable project: the technologies actually used in that project's rewritten bullets plus its relevant existing environment; realistic versions; do not paste every JD technology.
 - Return ONLY JSON.`
@@ -101,7 +102,7 @@ WRITING RULES:
     .replace('{YEARS_FLOOR}', resumeJson.totalExperienceYears ? String(Math.floor(resumeJson.totalExperienceYears)) : 'N');
 
   const reqs = (analysis.requirements || []).map(r =>
-    `- [${r.priority}] ${r.name} — JD keyword "${r.terms[0]}" (${r.status}${r.evidenceProjects && r.evidenceProjects.length ? `; evidence in ${r.evidenceProjects.join(',')}` : r.status === 'verified' || r.status === 'confirmed' ? '; summary/skills only' : ''}${r.relatedEvidence ? `; related: ${r.relatedEvidence}` : ''})`
+    `- [${r.priority}] ${r.name} — JD keyword "${r.jdKeyword || r.terms[0]}" (${r.status}${r.evidenceProjects && r.evidenceProjects.length ? `; evidence in ${r.evidenceProjects.join(',')}` : r.status === 'verified' || r.status === 'confirmed' ? '; summary/skills only' : ''}${r.relatedEvidence ? `; related: ${r.relatedEvidence}` : ''})`
   ).join('\n');
 
   const user = `${wrap('resume', JSON.stringify(resumeJson, null, 1))}
@@ -167,4 +168,13 @@ Return ONLY JSON: {"edits":[{"section":"<section id>","index":<bullet index>,"te
   return { system, user };
 }
 
-module.exports = { analysisPrompt, rewritePrompt, layoutPrompt, fitPrompt, expandPrompt, coveragePatchPrompt, confirmationsText };
+// ── Review drafts for unverified technologies (never inserted into the resume) ──
+function draftPrompt({ items, projects, window }) {
+  const system = `You write SUGGESTED resume bullets for a recruiter to review with the candidate. These are drafts, not part of the submitted resume. ${INJECTION_GUARD}
+For each technology, pick the recent project where it would most plausibly fit (by domain and existing stack) and write one bullet describing how it would be used there, in the same style as that project's bullets. Use the exact technology name given. ${window ? `Each bullet ${window.lo}-${window.hi} characters.` : 'About two lines each.'} One sentence, past tense, no markdown.
+Return ONLY JSON: {"drafts":[{"keyword":"...","projectId":"...","bullet":"...","summaryBullet":"one Professional Summary bullet using the keyword"}]}`;
+  const user = `${wrap('resume', JSON.stringify({ projects, technologies: items }, null, 1))}`;
+  return { system, user };
+}
+
+module.exports = { analysisPrompt, rewritePrompt, layoutPrompt, fitPrompt, expandPrompt, coveragePatchPrompt, draftPrompt, confirmationsText };

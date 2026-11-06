@@ -44,7 +44,9 @@ function scoreResume(requirements, sections, { explicitTerms = null } = {}) {
       cells[key] = { applicable, present: applicable ? (r.yearsCheck ? true : hasAny(text, r.terms)) : hasAny(text, r.terms) };
       if (applicable && supported) { slots++; if (cells[key].present) filled++; }
     };
-    check('summary', supported, sections.summary);
+    // The Summary must use the JD's exact wording; other sections accept equivalent names.
+    cells.summary = { applicable: supported, present: r.yearsCheck ? true : hasAny(sections.summary, r.jdKeyword ? [r.jdKeyword] : r.terms) };
+    if (supported) { slots++; if (cells.summary.present) filled++; }
     check('skills', supported && !NO_SKILLS_ROW.has(r.category) && !r.yearsCheck, sections.skills);
     for (const p of sections.projects) {
       const evidenced = supported && (r.evidenceProjects || []).includes(p.id);
@@ -54,13 +56,13 @@ function scoreResume(requirements, sections, { explicitTerms = null } = {}) {
 
     const applicable = Object.values(cells).filter(c => c.applicable);
     let finalStatus;
-    if (!supported) finalStatus = r.status === 'transferable' ? 'Related experience only' : 'Needs confirmation';
+    if (!supported) finalStatus = r.status === 'transferable' ? 'Transferable' : 'Unverified';
     else if (applicable.every(c => c.present)) finalStatus = 'Covered';
     else if (applicable.some(c => c.present)) finalStatus = 'Partially covered';
     else finalStatus = 'Missing';
 
     rows.push({
-      id: r.id, requirement: r.name, keyword: r.terms[0], priority: r.priority, mandatory: r.mandatory, category: r.category,
+      id: r.id, requirement: r.name, keyword: r.jdKeyword || r.terms[0], relatedEvidence: r.status === 'transferable' ? r.evidence : '', priority: r.priority, mandatory: r.mandatory, category: r.category,
       explicit: !!r.explicit, supportStatus: r.status, evidenceSource: r.evidence, evidenceProjects: r.evidenceProjects || [],
       cells, inResume, finalStatus,
       // legacy field used by older frontends
@@ -80,7 +82,7 @@ function scoreResume(requirements, sections, { explicitTerms = null } = {}) {
     criticalTotal: requirements.filter(r => r.priority === 'Critical').length,
     criticalCovered: rows.filter(x => x.priority === 'Critical' && x.finalStatus === 'Covered').length,
     supportedCount: rows.filter(x => x.supportStatus === 'verified' || x.supportStatus === 'confirmed').length,
-    needsConfirmation: rows.filter(x => x.finalStatus === 'Needs confirmation' || x.finalStatus === 'Related experience only').length,
+    needsConfirmation: rows.filter(x => x.finalStatus === 'Unverified' || x.finalStatus === 'Transferable').length,
     rows,
     formula: 'Keyword Coverage = JD requirements found in the resume ÷ all requirements. Qualification Match = Σ(priority weight × support) ÷ Σweight, weights Critical 5 / High 3 / Medium 2 / Low 1, support verified/confirmed 1, related 0.5, unsupported 0. Supported Keyword Coverage = filled ÷ applicable sections (Summary, Technical Skills, and each recent project + Environment where the candidate has evidence) over supported requirements. JD Extraction Completeness = explicit JD technical terms evaluated ÷ found.',
   };

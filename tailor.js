@@ -17,6 +17,7 @@ const { validateRewrite, preserveSkills } = require('./schema');
 const { scoreResume, underrepresented } = require('./scoring');
 const { extractExplicitTerms, NON_TECH, CONTACT_LINE } = require('./jdTerms');
 const { closeGaps } = require('./coverage');
+const { generateDrafts, draftsDocx } = require('./drafts');
 const { applyRewrite, lockedSectionsIntact, setMargins, getMargins, auditFormatting } = require('./docxEngine');
 const render = require('./render');
 const { learnWindow } = require('./lineFit');
@@ -205,6 +206,9 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
     return { rewrite, warnings: w, restored };
   };
 
+  // Review drafts for unverified technologies run alongside the rewrite (no extra wait).
+  const draftsPromise = generateDrafts({ requirements, editable, window: lengthWindow, provider, requestId, log });
+
   progress('Rewriting the Professional Summary and the two most recent projects');
   let best = await rewriteOnce('');
   const firstDraftWarnings = [...best.warnings];
@@ -389,6 +393,9 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
   const after = scoreResume(requirements, sectionsFromModel(finalModel, editableIds), { explicitTerms });
   mark('done');
 
+  const reviewDrafts = await draftsPromise;
+  const reviewDraftsDocx = reviewDrafts.length ? await draftsDocx(reviewDrafts, { candidateName: model.header.name, jdTitle: analysis.jdTitle }) : null;
+
   const supported = requirements.filter(r => r.status === 'verified' || r.status === 'confirmed');
   const unsupportedReqs = requirements.filter(r => r.status === 'unsupported');
   const transferable = requirements.filter(r => r.status === 'transferable');
@@ -420,9 +427,9 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
       sections: [{ key: 'summary', label: 'Professional Summary' }, ...editable.map(p => ({ key: `project:${p.id}`, label: p.client })), { key: 'skills', label: 'Technical Skills' }, ...editable.map(p => ({ key: `env:${p.id}`, label: `Environment — ${p.client}` }))],
       rows: after.rows,
     },
-    confirmationQueue: after.rows.filter(r => (r.finalStatus === 'Needs confirmation' || r.finalStatus === 'Related experience only') &&
-        !['responsibility', 'experience_years'].includes(r.category) && !NON_TECH.test(r.keyword) && !CONTACT_LINE.test(r.keyword))
-      .map(r => ({ requirement: r.requirement, keyword: r.keyword, priority: r.priority, status: r.supportStatus, note: r.supportStatus === 'transferable' ? r.evidenceSource : '' }))
+    reviewDrafts,
+    reviewDraftsDocx,
+    confirmationQueue: reviewDrafts.map(d => ({ requirement: d.requirement, keyword: d.keyword, priority: d.priority, status: d.status, note: d.relatedExperience, projectId: d.projectId, client: d.client, draft: d.bullet, summaryDraft: d.summaryBullet }))
       .sort((a, b) => ({ Critical: 0, High: 1, Medium: 2, Low: 3 }[a.priority] - { Critical: 0, High: 1, Medium: 2, Low: 3 }[b.priority])),
     scores: {
       before: { keywordCoverage: before.keywordCoverage, qualificationMatch: before.qualificationMatch, supportedKeywordCoverage: before.supportedKeywordCoverage, supportedAlignment: before.supportedKeywordCoverage, extractionCompleteness: before.extractionCompleteness },

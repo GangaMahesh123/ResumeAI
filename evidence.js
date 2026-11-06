@@ -81,7 +81,9 @@ function normalizeRequirements(rawReqs, { model, confirmations, jdText, explicit
     }
   }
   for (const r of out) {
-    r.explicit = explicitTerms.some(x => r.terms.some(t => sameTech(t, x.term)));
+    const exact = explicitTerms.find(x => r.terms.some(t => sameTech(t, x.term)));
+    r.explicit = !!exact;
+    r.jdKeyword = exact ? exact.term : null; // exact JD wording, used in the Professional Summary
   }
 
   for (const r of out) verifyRequirement(r, { model, confirmations });
