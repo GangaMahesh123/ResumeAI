@@ -72,15 +72,22 @@ function createAnthropicProvider() {
   const Anthropic = require('@anthropic-ai/sdk');
   const client = new Anthropic({ apiKey: config.anthropicApiKey, timeout: config.requestTimeoutMs, maxRetries: 0 });
   return {
-    async complete({ system, user, maxTokens }) {
+    async complete({ system, user, maxTokens, model }) {
+      const useModel = model || config.model;
       // Streaming keeps long generations alive and avoids SDK limits on large max_tokens.
       const stream = client.messages.stream({
-        model: config.model,
+        model: useModel,
         max_tokens: maxTokens,
         system,
         messages: [{ role: 'user', content: user }],
       });
-      const msg = await stream.finalMessage();
+      let msg;
+      try { msg = await stream.finalMessage(); }
+      catch (e) {
+        // A missing fast model must not break the run: fall back to the main model.
+        if (useModel !== config.model && (e.status === 404 || e.status === 400)) return this.complete({ system, user, maxTokens });
+        throw e;
+      }
       const text = msg.content.map(b => (b.type === 'text' ? b.text : '')).join('');
       if (msg.stop_reason === 'max_tokens') {
         throw new AIError('invalid_json', `The AI reply hit the output limit (${maxTokens} tokens). Increase CLAUDE_REWRITE_MAX_TOKENS.`, { truncated: true });
@@ -96,19 +103,19 @@ function createAnthropicProvider() {
  * - Invalid JSON: re-ask (counts as a retry).
  * - Auth/config errors: fail immediately.
  */
-async function callJson(provider, { system, user, maxTokens, label, requestId, log = console }) {
+async function callJson(provider, { system, user, maxTokens, label, requestId, log = console, model, retries }) {
   let lastErr;
-  const attempts = Math.max(1, config.maxRetries);
+  const attempts = Math.max(1, retries || config.maxRetries);
   for (let i = 0; i < attempts; i++) {
     try {
-      const text = await provider.complete({ system, user, maxTokens });
+      const text = await provider.complete({ system, user, maxTokens, model });
       return extractJson(text);
     } catch (raw) {
       const err = classify(raw);
       lastErr = err;
       log.error(`[${requestId}] AI ${label} attempt ${i + 1}/${attempts} failed: ${err.kind} — ${err.message}${err.cause ? ` (${err.cause})` : ''}`);
       if (!TRANSIENT.has(err.kind) && err.kind !== 'invalid_json') break;
-      if (i < attempts - 1) await sleep(Math.min(8000, 750 * 2 ** i) + Math.floor(Math.random() * 250));
+      if (i < attempts - 1) await sleep(Math.min(4000, 500 * 2 ** i) + Math.floor(Math.random() * 200));
     }
   }
   lastErr.stage = label;

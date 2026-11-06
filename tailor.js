@@ -16,6 +16,7 @@ const { normalizeRequirements, guardRewrite, enforceGuard, versionWarnings, fixY
 const { validateRewrite, preserveSkills } = require('./schema');
 const { scoreResume, underrepresented } = require('./scoring');
 const { extractExplicitTerms } = require('./jdTerms');
+const { closeGaps } = require('./coverage');
 const { applyRewrite, lockedSectionsIntact, setMargins, getMargins, auditFormatting } = require('./docxEngine');
 const render = require('./render');
 const { learnWindow } = require('./lineFit');
@@ -113,10 +114,13 @@ function draftForPrompt(rewrite) {
  */
 async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, confirmations = [], prepared = null }, ctx) {
   const { provider, requestId = 'local', log = console } = ctx;
+  const progress = typeof ctx.progress === 'function' ? ctx.progress : () => {};
   const settings = mergeSettings(rawSettings);
   const t0 = Date.now();
   const timings = {};
   const mark = k => { timings[k] = Date.now() - t0; };
+  const elapsed = () => Date.now() - t0;
+  const hasTime = ms => elapsed() + ms < config.timeBudgetMs;
   const warnings = [];
 
   // 1. Parse complete resume
@@ -151,16 +155,15 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
 
   const resumeJson = modelForAI(model);
 
-  // Exact two-line bullets: learn the character window from this resume's own bullets.
-  let lengthWindow = null;
-  if (settings.exactTwoLineBullets) {
-    lengthWindow = await learnWindow(baseDocx, model);
-    settings.lengthWindow = lengthWindow;
-  }
-
-  // 4. Requirement matrix + evidence
+  // 4. Requirement matrix (fast model) runs in parallel with measuring the
+  //    two-line bullet length on the rendered original.
+  progress('Reading the JD and building the requirement matrix');
   const ap = analysisPrompt({ resumeJson, jdText, confirmations, resumeDomain: resumeDom.domain, jdDomain: jdDom.domain });
-  const rawAnalysis = await callJson(provider, { ...ap, maxTokens: config.analysisMaxTokens, label: 'analysis', requestId, log });
+  const [rawAnalysis, lengthWindow] = await Promise.all([
+    callJson(provider, { ...ap, maxTokens: config.analysisMaxTokens, label: 'analysis', requestId, log, model: config.fastModel }),
+    settings.exactTwoLineBullets ? learnWindow(baseDocx, model) : Promise.resolve(null),
+  ]);
+  if (lengthWindow) settings.lengthWindow = lengthWindow;
   const explicitTerms = extractExplicitTerms(jdText);
   const requirements = normalizeRequirements(rawAnalysis.requirements, { model, confirmations, jdText, explicitTerms });
   const explicitCount = explicitTerms.length;
@@ -171,10 +174,26 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
   const editableIds = editable.map(p => p.id);
   const before = scoreResume(requirements, sectionsFromModel(model, editableIds), { explicitTerms });
 
-  // 5. Rewrite
+  // 5. Rewrite — the summary/skills and each recent project are written by
+  //    parallel calls (same evidence and rules), then merged and validated.
   const rewriteOnce = async extraInstructions => {
-    const rp = rewritePrompt({ resumeJson, jdText, analysis, confirmations, editable, settings, domain, extraInstructions });
-    const raw = await callJson(provider, { ...rp, maxTokens: config.rewriteMaxTokens, label: 'rewrite', requestId, log });
+    const scopes = [{ key: 'summary', note: 'SCOPE OF THIS CALL: return the complete "professionalSummary", "technicalSkills", "skillsRemoved", "transferableSkills", "unsupportedSkills" and "changes". Return "projects": [] — the projects are written by separate calls.' },
+      ...editable.map(p => ({ key: p.id, note: `SCOPE OF THIS CALL: return ONLY the "projects" entry for ${p.id} (${p.client}) with all its bullets and environment. Return "professionalSummary": [] and "technicalSkills": [] — those are written by a separate call. Avoid repeating content that belongs to the other project.` }))];
+    const parts = await Promise.all(scopes.map(sc => {
+      const rp = rewritePrompt({ resumeJson, jdText, analysis, confirmations, editable, settings, domain, extraInstructions: `${sc.note}${extraInstructions ? `\n${extraInstructions}` : ''}` });
+      return callJson(provider, { ...rp, maxTokens: config.rewriteMaxTokens, label: `rewrite-${sc.key === 'summary' ? 'summary' : 'project'}`, requestId, log });
+    }));
+    const [sumPart, ...projParts] = parts;
+    const raw = {
+      ...sumPart,
+      // Each call's own project, plus any attempt to touch a protected project
+      // (kept so validation ignores and reports it).
+      projects: [
+        ...projParts.flatMap((pp, i) => (Array.isArray(pp.projects) ? pp.projects : []).filter(x => x && String(x.projectId) === editable[i].id)),
+        ...parts.flatMap(pp => (Array.isArray(pp.projects) ? pp.projects : []).filter(x => x && x.projectId && !editable.some(e => e.id === String(x.projectId)))).slice(0, 3),
+      ],
+      changes: [...(sumPart.changes || []), ...projParts.flatMap(pp => pp.changes || [])],
+    };
     const { rewrite, warnings: w } = validateRewrite(raw, { editable, model });
     if (!settings.rewriteSummary) rewrite.professionalSummary = model.summary ? [...model.summary.bullets] : [];
     if (!settings.optimizeSkills) rewrite.technicalSkills = [];
@@ -185,18 +204,33 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
     return { rewrite, warnings: w, restored };
   };
 
+  progress('Rewriting the Professional Summary and the two most recent projects');
   let best = await rewriteOnce('');
   const firstDraftWarnings = [...best.warnings];
   let violations = guardRewrite(best.rewrite, { model, confirmations, requirements, editable });
   let draftScore = scoreDraft(requirements, best.rewrite, violations, model, editable, explicitTerms);
   mark('rewrite');
 
-  // 6. Optimization loop (bounded)
+  // 6a. Fast targeted gap closing (code for Skills/Environment, one fast call for bullets).
   const passes = [];
+  {
+    const under0 = underrepresented(draftScore, editable.map(p => ({ id: p.id, label: p.client })));
+    if (under0.length) {
+      progress('Closing remaining keyword gaps');
+      const stats = await closeGaps(best.rewrite, draftScore.rows, { requirements, editable, model, confirmations, window: lengthWindow, provider, requestId, log });
+      violations = guardRewrite(best.rewrite, { model, confirmations, requirements, editable });
+      draftScore = scoreDraft(requirements, best.rewrite, violations, model, editable, explicitTerms);
+      passes.push({ pass: 'targeted', ...stats, supportedKeywordCoverage: draftScore.supportedKeywordCoverage, gapsBefore: under0.length });
+    }
+  }
+
+  // 6b. Full optimization pass only if still needed and time allows.
   for (let pass = 1; pass <= config.optimizationPasses; pass++) {
     const under = underrepresented(draftScore, editable.map(p => ({ id: p.id, label: p.client })));
     const short = countShortfalls(best.rewrite, editable, settings);
     if (!violations.length && !short.length && (!under.length || draftScore.supportedKeywordCoverage >= settings.alignmentTarget)) break;
+    if (!hasTime(50000)) { warnings.push('Skipped an extra optimization pass to stay within the time budget.'); break; }
+    progress('Closing remaining keyword gaps');
     const lines = [];
     if (violations.length) lines.push(`Remove or rephrase these unsupported claims (the technology is not evidenced for that section): ${violations.slice(0, 25).map(v => `[${v.section}${v.projectId ? ` ${v.projectId}` : ''}] ${v.terms.join(', ')}`).join('; ')}.`);
     if (under.length) lines.push(`COVERAGE GAPS — these requirements are supported by the candidate's evidence but are missing from sections where they belong. Use the exact JD keyword and add each one to every section listed (rewrite or merge existing bullets; do not just append): ${under.slice(0, 40).map(r => `"${r.keyword}" → [${r.missingIn.join(' | ')}]`).join('; ')}.`);
@@ -222,7 +256,9 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
   warnings.push(...versionWarnings(rewrite, editable));
   warnings.push(...countShortfalls(rewrite, editable, settings));
 
-  const tlCtx = { provider, window: lengthWindow, requestId, log, requirements, model, confirmations, editable, jdText };
+  const tlCtx = { provider, window: lengthWindow, requestId, log, requirements, model, confirmations, editable, jdText,
+    model_fast: config.fastModel, deadline: t0 + config.timeBudgetMs, hardDeadline: t0 + config.timeBudgetMs + 25000 };
+  progress('Fitting every bullet to exactly two full lines');
   if (lengthWindow) await fitLengths(rewrite, tlCtx);
   mark('lengths');
 
@@ -242,18 +278,19 @@ async function tailor({ fileBuffer, fileName, jdText, settings: rawSettings, con
   let twoLineReport = null;
   if (lengthWindow) {
     // Page target by whole bullets; margins stay exactly as in the original.
+    progress('Rendering and checking the page count');
     const tp = await targetPages(rewrite, build, tlCtx, settings);
     buffer = tp.buffer; layoutLog = tp.log; warnings.push(...tp.warnings);
     // Verify each bullet on the rendered page and repair mis-wrapped ones.
     let measured = await verifyRendered(buffer, rewrite);
-    for (let k = 0; k < 2 && measured && measured.some(m => m.ok === false); k++) {
+    for (let k = 0; k < 2 && measured && measured.some(m => m.ok === false) && Date.now() < tlCtx.hardDeadline; k++) {
       const changed = await fitLengths(rewrite, tlCtx, { targets: repairTargets(measured, lengthWindow), passes: 1 });
       if (!changed) break;
       buffer = build(rewrite).buffer;
       measured = await verifyRendered(buffer, rewrite);
     }
     page = await render.countPages(buffer);
-    if (page.verified && page.pages !== target) {
+    if (page.verified && page.pages !== target && Date.now() < tlCtx.hardDeadline) {
       const tp2 = await targetPages(rewrite, build, tlCtx, settings);
       buffer = tp2.buffer; layoutLog.push(...tp2.log);
       measured = await verifyRendered(buffer, rewrite);

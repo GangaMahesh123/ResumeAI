@@ -160,6 +160,49 @@ function createApp({ provider = createAnthropicProvider(), store = new Store(), 
     } catch (e) { fail(res, req, e.status || 500, 'CONFIRMATION', e.message); }
   });
 
+  // ── background jobs (in memory, cleared after 30 minutes) ──
+  const jobs = new Map();
+  setInterval(() => { const cut = Date.now() - 30 * 60 * 1000; for (const [id, j] of jobs) if ((j.finishedAt || j.startedAt) < cut) jobs.delete(id); }, 60 * 1000).unref();
+
+  function errorInfo(err, requestId) {
+    if (err instanceof AIError) {
+      log.error(`[${requestId}] AI failure at ${err.stage || 'ai'}: ${err.kind} — ${err.message}`);
+      return { status: err.kind === 'config' || err.kind === 'auth' ? 503 : 502, code: `AI_${String(err.kind).toUpperCase()}`, stage: err.stage || null,
+        error: `The AI step failed (${err.kind.replace('_', ' ')}): ${err.message} Your resume was NOT tailored — please try again.` };
+    }
+    if (err instanceof PipelineError || err.code === 'INVALID_DOCX' || err.code === 'UNSUPPORTED_FORMAT') return { status: err.status || 422, code: err.code || 'PARSE_FAILED', error: err.message };
+    log.error(`[${requestId}] optimize error`, err);
+    return { status: 500, code: 'SERVER', error: `Optimization failed: ${err.message}` };
+  }
+
+  function buildPayload(result, { requestId, historyId, candidate }) {
+    const added = result.changes.filter(c => c.type === 'added').length;
+    const removed = result.changes.filter(c => c.type === 'removed').length;
+    return {
+      success: true, requestId, historyId,
+      docxBase64: result.buffer.toString('base64'),
+      optimizedResume: result.fullText,
+      matchScore: Math.round(result.scores.after.qualificationMatch),
+      matchScoreBefore: Math.round(result.scores.before.qualificationMatch),
+      changes: result.changes.map(c => ({ type: c.type, description: c.description, section: c.section })),
+      keywordsAdded: result.scores.after.keywordCoverage > result.scores.before.keywordCoverage ? Math.round((result.scores.after.keywordCoverage - result.scores.before.keywordCoverage) / 100 * result.requirements.length) : 0,
+      bulletsEnhanced: result.preview.projects.reduce((n, p) => n + p.bullets.length, 0) + result.preview.professionalSummary.length,
+      stackSwaps: 0, pointsTrimmed: removed,
+      sectionsImproved: result.changes.filter(c => c.type === 'modified').length,
+      swapsApplied: [], removedCount: removed, addedCount: added,
+      jdStack: { swapsDetected: 0, roleType: result.roleType },
+      summary: `Tailored for ${result.jdTitle || 'this JD'} (${result.domain.label}). Supported keyword coverage ${result.scores.after.supportedKeywordCoverage}%; ${result.confirmationQueue.length} skill(s) awaiting confirmation.`,
+      v2: {
+        candidate: { id: candidate.id, name: candidate.name },
+        domain: result.domain, jdTitle: result.jdTitle, scores: result.scores,
+        requirements: result.requirements, coverageMatrix: result.coverageMatrix, confirmationQueue: result.confirmationQueue,
+        supportedSkills: result.supportedSkills, transferableSkills: result.transferableSkills, unsupportedSkills: result.unsupportedSkills,
+        projects: result.projects, lockedProjects: result.lockedProjects, preview: result.preview,
+        validation: result.validation, settings: result.settings, source: result.source, timings: result.timings,
+      },
+    };
+  }
+
   // ══ OPTIMIZE ════════════════════════════════════════════════════════
   app.post('/api/resume/optimize', authMiddleware, optimizeLimiter, upload.single('resume'), async (req, res) => {
     const started = Date.now();
@@ -192,79 +235,51 @@ function createApp({ provider = createAnthropicProvider(), store = new Store(), 
       });
       const confirmations = candidate.confirmations || [];
 
-      const result = await tailor(
+      const runTailor = progress => tailor(
         { fileBuffer: req.file.buffer, fileName: req.file.originalname, jdText, settings, confirmations, prepared },
-        { provider, requestId: req.id, log },
+        { provider, requestId: req.id, log, progress },
       );
+      const finish = result => {
+        const historyId = `opt_${Date.now()}`;
+        store.addHistory(req.user.userId, {
+          id: historyId, candidateId, candidateName: candidate.name,
+          jdSnippet: jdText.slice(0, 200), jdTitle: result.jdTitle,
+          matchScore: Math.round(result.scores.after.qualificationMatch),
+          matchScoreBefore: Math.round(result.scores.before.qualificationMatch),
+          scores: result.scores, pageCount: result.validation.pageCount, domain: result.domain.used,
+          keywordsAdded: result.changes.length, createdAt: new Date().toISOString(),
+        });
+        log.log(`[${req.id}] optimize ok in ${Date.now() - started}ms — ${result.domain.used}, pages=${result.validation.pageCount}, supported=${result.scores.after.supportedKeywordCoverage}%`);
+        return buildPayload(result, { requestId: req.id, historyId, candidate });
+      };
 
-      const historyId = `opt_${Date.now()}`;
-      store.addHistory(req.user.userId, {
-        id: historyId, candidateId, candidateName: candidate.name,
-        jdSnippet: jdText.slice(0, 200), jdTitle: result.jdTitle,
-        matchScore: Math.round(result.scores.after.qualificationMatch),
-        matchScoreBefore: Math.round(result.scores.before.qualificationMatch),
-        scores: result.scores, pageCount: result.validation.pageCount, domain: result.domain.used,
-        keywordsAdded: result.changes.length, createdAt: new Date().toISOString(),
-      });
+      // Background job: the browser polls, so long runs never hit a connection timeout.
+      if (String(req.body.async || '') === '1') {
+        const job = { id: `job_${crypto.randomBytes(8).toString('hex')}`, userId: req.user.userId, status: 'running', stage: 'Starting', startedAt: Date.now(), requestId: req.id };
+        jobs.set(job.id, job);
+        res.status(202).json({ success: true, jobId: job.id, requestId: req.id });
+        runTailor(stage => { job.stage = stage; })
+          .then(result => { job.result = finish(result); job.status = 'done'; })
+          .catch(err => { const e = errorInfo(err, req.id); job.status = 'error'; job.error = e; })
+          .finally(() => { job.finishedAt = Date.now(); });
+        return;
+      }
 
-      log.log(`[${req.id}] optimize ok in ${Date.now() - started}ms — ${result.domain.used}, pages=${result.validation.pageCount}, supported=${result.scores.after.supportedAlignment}%`);
-
-      const added = result.changes.filter(c => c.type === 'added').length;
-      const removed = result.changes.filter(c => c.type === 'removed').length;
-      res.json({
-        success: true,
-        requestId: req.id,
-        historyId,
-        // ── V1-compatible fields ──
-        docxBase64: result.buffer.toString('base64'),
-        optimizedResume: result.fullText,
-        matchScore: Math.round(result.scores.after.qualificationMatch),
-        matchScoreBefore: Math.round(result.scores.before.qualificationMatch),
-        changes: result.changes.map(c => ({ type: c.type, description: c.description, section: c.section })),
-        keywordsAdded: result.scores.after.keywordCoverage > result.scores.before.keywordCoverage ? Math.round((result.scores.after.keywordCoverage - result.scores.before.keywordCoverage) / 100 * result.requirements.length) : 0,
-        bulletsEnhanced: result.preview.projects.reduce((n, p) => n + p.bullets.length, 0) + result.preview.professionalSummary.length,
-        stackSwaps: 0,
-        pointsTrimmed: removed,
-        sectionsImproved: result.changes.filter(c => c.type === 'modified').length,
-        swapsApplied: [],
-        removedCount: removed,
-        addedCount: added,
-        jdStack: { swapsDetected: 0, roleType: result.roleType },
-        summary: `Tailored for ${result.jdTitle || 'this JD'} (${result.domain.label}). Supported keyword coverage ${result.scores.after.supportedKeywordCoverage}%; ${result.confirmationQueue.length} skill(s) awaiting confirmation.`,
-        // ── V2 fields ──
-        v2: {
-          candidate: { id: candidate.id, name: candidate.name },
-          domain: result.domain,
-          jdTitle: result.jdTitle,
-          scores: result.scores,
-          requirements: result.requirements,
-          coverageMatrix: result.coverageMatrix,
-          confirmationQueue: result.confirmationQueue,
-          supportedSkills: result.supportedSkills,
-          transferableSkills: result.transferableSkills,
-          unsupportedSkills: result.unsupportedSkills,
-          projects: result.projects,
-          lockedProjects: result.lockedProjects,
-          preview: result.preview,
-          validation: result.validation,
-          settings: result.settings,
-          source: result.source,
-          timings: result.timings,
-        },
-      });
+      const result = await runTailor();
+      res.json(finish(result));
     } catch (err) {
-      if (err instanceof AIError) {
-        log.error(`[${req.id}] AI failure at ${err.stage || 'ai'}: ${err.kind} — ${err.message}`);
-        const status = err.kind === 'config' || err.kind === 'auth' ? 503 : 502;
-        return fail(res, req, status, `AI_${String(err.kind).toUpperCase()}`,
-          `The AI step failed (${err.kind.replace('_', ' ')}): ${err.message} Your resume was NOT tailored — please try again.`, { stage: err.stage || null });
-      }
-      if (err instanceof PipelineError || err.code === 'INVALID_DOCX' || err.code === 'UNSUPPORTED_FORMAT') {
-        return fail(res, req, err.status || 422, err.code || 'PARSE_FAILED', err.message);
-      }
-      log.error(`[${req.id}] optimize error`, err);
-      fail(res, req, 500, 'SERVER', `Optimization failed: ${err.message}`);
+      const e = errorInfo(err, req.id);
+      fail(res, req, e.status, e.code, e.error, e.stage ? { stage: e.stage } : {});
     }
+  });
+
+  app.get('/api/resume/jobs/:id', authMiddleware, (req, res) => {
+    const job = jobs.get(req.params.id);
+    if (!job || job.userId !== req.user.userId) return fail(res, req, 404, 'JOB_NOT_FOUND', 'This run is no longer on the server (it may have restarted). Please click Generate again.');
+    const base = { jobId: job.id, status: job.status, stage: job.stage, elapsedMs: (job.finishedAt || Date.now()) - job.startedAt, requestId: job.requestId };
+    if (job.status === 'done') return res.json({ ...base, success: true, result: job.result });
+    if (job.status === 'error') return res.status(job.error.status).json({ ...base, success: false, error: job.error.error, code: job.error.code });
+    res.json({ ...base, success: true });
   });
 
   app.get('/api/resume/history', authMiddleware, (req, res) => res.json({ history: store.getHistory(req.user.userId) }));
@@ -289,6 +304,9 @@ function createApp({ provider = createAnthropicProvider(), store = new Store(), 
 }
 
 if (require.main === module) {
+  // Log, don't crash, on stray async errors so the service stays up.
+  process.on('unhandledRejection', e => console.error('[unhandledRejection]', e));
+  process.on('uncaughtException', e => console.error('[uncaughtException]', e));
   const app = createApp();
   app.listen(config.port, () => console.log(`ResumeAI V2 running on http://localhost:${config.port} (model ${config.model})`));
 }

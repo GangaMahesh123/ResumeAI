@@ -156,4 +156,13 @@ Rules: only technologies, clients and facts already present in that same project
   return { system, user };
 }
 
-module.exports = { analysisPrompt, rewritePrompt, layoutPrompt, fitPrompt, expandPrompt, confirmationsText };
+// ── Targeted coverage patch ───────────────────────────────────────────
+function coveragePatchPrompt({ tasks, window }) {
+  const system = `You make small, precise edits to resume bullets so required keywords appear, without changing facts. ${INJECTION_GUARD}
+For each task, choose the existing bullet in that section that is most related to the keyword and rewrite it so it naturally includes the keyword (exact spelling given), keeping its original facts, technologies and metrics. Prefer weaving several keywords of the same section into related bullets. Do not add any other new technology. ${window ? `Keep each edited bullet between ${window.lo} and ${window.hi} characters.` : ''} One sentence per bullet, no markdown.
+Return ONLY JSON: {"edits":[{"section":"<section id>","index":<bullet index>,"text":"<rewritten bullet>"}]}`;
+  const user = wrap('resume', JSON.stringify(tasks, null, 1));
+  return { system, user };
+}
+
+module.exports = { analysisPrompt, rewritePrompt, layoutPrompt, fitPrompt, expandPrompt, coveragePatchPrompt, confirmationsText };

@@ -43,12 +43,13 @@ async function fitLengths(rw, ctx, { targets = null, passes = config.lineFitPass
   const groups = termGroups(ctx.requirements);
   let changed = 0;
   for (let pass = 0; pass < passes; pass++) {
+    if (ctx.hardDeadline && Date.now() > ctx.hardDeadline) break;
     const items = listBullets(rw)
       .map(b => ({ ...b, ...(targets && targets[b.id] ? targets[b.id] : { lo: window.lo, hi: window.hi }) }))
       .filter(b => (targets ? !!targets[b.id] : true) && (b.text.length < b.lo || b.text.length > b.hi));
     if (!items.length) break;
     let raw;
-    try { raw = await callJson(provider, { ...fitPrompt({ items }), maxTokens: Math.min(config.rewriteMaxTokens, 400 + items.length * 140), label: 'fit-lengths', requestId, log }); }
+    try { raw = await callJson(provider, { ...fitPrompt({ items }), maxTokens: Math.min(config.rewriteMaxTokens, 400 + items.length * 140), label: 'fit-lengths', requestId, log, model: ctx.model_fast }); }
     catch (e) { log.error(`[${requestId}] fit-lengths failed: ${e.kind || e.message}`); break; }
     const byId = new Map((Array.isArray(raw.bullets) ? raw.bullets : []).map(x => [String(x && x.id), cleanBullet(x && x.text)]));
     for (const it of items) {
@@ -60,6 +61,9 @@ async function fitLengths(rw, ctx, { targets = null, passes = config.lineFitPass
       const before = new Set(unsupportedIn(it.text, src, groups));
       const after = unsupportedIn(next, src, groups).filter(t => !before.has(t));
       if (after.length) continue;
+      // Never lose a supported JD keyword while resizing.
+      const lost = (ctx.requirements || []).some(r => (r.status === 'verified' || r.status === 'confirmed') && hasAny(it.text, r.terms) && !hasAny(next, r.terms));
+      if (lost) continue;
       setBullet(rw, it.id, next);
       changed++;
     }
@@ -134,7 +138,7 @@ async function addBullets(rw, n, ctx) {
     projects: editable.map(p => ({ projectId: p.id, client: p.client, bullets: rw.projects[p.id].bullets, environment: rw.projects[p.id].environment, originalBullets: p.bullets })),
   };
   let raw;
-  try { raw = await callJson(provider, { ...expandPrompt({ count: n, window, sectionsJson, jdText }), maxTokens: Math.min(config.rewriteMaxTokens, 600 + n * 160), label: 'add-bullets', requestId, log }); }
+  try { raw = await callJson(provider, { ...expandPrompt({ count: n, window, sectionsJson, jdText }), maxTokens: Math.min(config.rewriteMaxTokens, 600 + n * 160), label: 'add-bullets', requestId, log, model: ctx.model_fast }); }
   catch (e) { log.error(`[${requestId}] add-bullets failed: ${e.kind || e.message}`); return 0; }
   const groups = termGroups(ctx.requirements);
   let added = 0;
@@ -172,6 +176,7 @@ async function targetPages(rw, build, ctx, settings) {
   if (!st) return { buffer, stats: null, log: logOut, warnings: ['LibreOffice is not installed on the server, so the page count could not be verified.'] };
   logOut.push({ step: 'initial', pages: st.pages, lastPageLines: st.lastPageLines });
   for (let i = 0; i < config.layoutPasses + 3 && st.pages !== target; i++) {
+    if (ctx.hardDeadline && Date.now() > ctx.hardDeadline) { warnings.push('Stopped page fitting to stay within the time budget.'); break; }
     const lpp = st.linesPerPage;
     if (st.pages > target) {
       const linesToCut = (st.pages - target - 1) * lpp + st.lastPageLines + 1;
@@ -186,7 +191,7 @@ async function targetPages(rw, build, ctx, settings) {
       if (!added) { warnings.push('Could not add enough supported content to reach the page target.'); break; }
       // Make the new bullets exactly two lines as well.
       const fresh = Object.fromEntries(listBullets(rw).filter(b => !before.includes(b.id + b.text)).map(b => [b.id, { lo: ctx.window.lo, hi: ctx.window.hi }]));
-      await fitLengths(rw, ctx, { targets: fresh, passes: 2 });
+      await fitLengths(rw, ctx, { targets: fresh, passes: 1 });
       logOut.push({ step: `added ${added} supported bullet(s)` });
     }
     buffer = build(rw).buffer;

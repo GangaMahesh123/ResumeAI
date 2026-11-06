@@ -255,19 +255,37 @@ function status(kind, msg, extra) {
 }
 
 // ── Run ─────────────────────────────────────────────────────────────
-const STAGES = ['Reading the complete resume', 'Measuring two-line bullet length', 'Building the requirement matrix', 'Checking evidence for every requirement', 'Rewriting the Professional Summary', 'Rewriting the two most recent projects', 'Optimizing skills and Environment lines', 'Validating facts', 'Fitting every bullet to 2 full lines', 'Rendering and checking page count', 'Scoring the final resume'];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 $('go').onclick = async () => {
   const btn = $('go'); btn.disabled = true;
-  const t0 = Date.now(); let i = 0;
-  const tick = () => { const s = Math.round((Date.now() - t0) / 1000); btn.replaceChildren(el('span', { class: 'spinner' }), `${STAGES[Math.min(STAGES.length - 1, Math.floor(s / 12))]}… ${s}s`); };
-  tick(); const timer = setInterval(tick, 1000); void i;
+  const t0 = Date.now(); let stage = 'Uploading';
+  const tick = () => { const s = Math.round((Date.now() - t0) / 1000); btn.replaceChildren(el('span', { class: 'spinner' }), `${stage}… ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`); };
+  tick(); const timer = setInterval(tick, 1000);
   status(); $('results').classList.add('hidden');
   try {
     const fd = new FormData();
     fd.append('resume', file); fd.append('jobDescription', $('jd').value);
     fd.append('settings', JSON.stringify(settings()));
+    fd.append('async', '1');
     if ($('candidate').value) fd.append('candidateId', $('candidate').value);
-    last = await api('/api/resume/optimize', { method: 'POST', body: fd });
+    const start = await api('/api/resume/optimize', { method: 'POST', body: fd });
+    if (!start.jobId) { last = start; }
+    else {
+      stage = 'Starting';
+      let misses = 0;
+      for (;;) {
+        await sleep(3000);
+        let st;
+        try { st = await api(`/api/resume/jobs/${start.jobId}`); misses = 0; }
+        catch (err) {
+          if (err.body && err.body.code) throw err;          // real error from the server
+          if (++misses >= 6) throw err;                       // ~20 s unreachable
+          stage = 'Reconnecting'; continue;
+        }
+        if (st.stage) stage = st.stage;
+        if (st.status === 'done') { last = st.result; break; }
+      }
+    }
     renderResults(last); loadCandidates(); loadHistory();
   } catch (err) {
     status('err', err.message, err.body && err.body.requestId ? `Request ID: ${err.body.requestId}` : '');
