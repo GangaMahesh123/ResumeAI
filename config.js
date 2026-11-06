@@ -11,7 +11,7 @@ const config = {
   fastModel: process.env.CLAUDE_FAST_MODEL || 'claude-haiku-5-5',
   // Target end-to-end time. Optional polishing steps are skipped once this is used up.
   timeBudgetMs: num(process.env.TIME_BUDGET_MS, 110000),
-  analysisMaxTokens: num(process.env.CLAUDE_ANALYSIS_MAX_TOKENS, 8000),
+  analysisMaxTokens: num(process.env.CLAUDE_ANALYSIS_MAX_TOKENS, 16000),
   rewriteMaxTokens: num(process.env.CLAUDE_REWRITE_MAX_TOKENS, 12000),
   requestTimeoutMs: num(process.env.CLAUDE_TIMEOUT_MS, 90000),
   maxRetries: num(process.env.CLAUDE_MAX_RETRIES, 3),

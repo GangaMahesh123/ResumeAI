@@ -90,7 +90,7 @@ function createAnthropicProvider() {
       }
       const text = msg.content.map(b => (b.type === 'text' ? b.text : '')).join('');
       if (msg.stop_reason === 'max_tokens') {
-        throw new AIError('invalid_json', `The AI reply hit the output limit (${maxTokens} tokens). Increase CLAUDE_REWRITE_MAX_TOKENS.`, { truncated: true });
+        throw new AIError('invalid_json', `The AI reply was longer than its ${maxTokens}-token limit.`, { truncated: true });
       }
       return text;
     },
@@ -106,15 +106,18 @@ function createAnthropicProvider() {
 async function callJson(provider, { system, user, maxTokens, label, requestId, log = console, model, retries }) {
   let lastErr;
   const attempts = Math.max(1, retries || config.maxRetries);
+  let budget = maxTokens;
   for (let i = 0; i < attempts; i++) {
     try {
-      const text = await provider.complete({ system, user, maxTokens, model });
+      const text = await provider.complete({ system, user, maxTokens: budget, model });
       return extractJson(text);
     } catch (raw) {
       const err = classify(raw);
       lastErr = err;
       log.error(`[${requestId}] AI ${label} attempt ${i + 1}/${attempts} failed: ${err.kind} — ${err.message}${err.cause ? ` (${err.cause})` : ''}`);
       if (!TRANSIENT.has(err.kind) && err.kind !== 'invalid_json') break;
+      // Cut off by the output limit: retry at once with double the room.
+      if (err.truncated) { budget = Math.min(32000, budget * 2); continue; }
       if (i < attempts - 1) await sleep(Math.min(4000, 500 * 2 ** i) + Math.floor(Math.random() * 200));
     }
   }
